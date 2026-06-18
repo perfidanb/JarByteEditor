@@ -20,7 +20,7 @@ public final class StatisticsEngine {
             if (entry.type() == EntryType.CLASS) {
                 classes++;
                 try {
-                    ClassSummary summary = analyzer.analyze(entry.bytes());
+                    ClassSummary summary = analyzer.analyze(entry.readBytesOnce());
                     methods += summary.methods().size();
                     fields += summary.fields().size();
                     instructions += summary.instructionCount();

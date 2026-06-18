@@ -21,7 +21,7 @@ public final class CallGraphService {
                 continue;
             }
             try {
-                ClassSummary summary = analyzer.analyze(entry.bytes());
+                ClassSummary summary = analyzer.analyze(entry.readBytesOnce());
                 for (MethodSummary method : summary.methods()) {
                     graph.put(summary.name() + "." + method.name() + method.descriptor(), method.calls());
                 }

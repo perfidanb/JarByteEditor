@@ -23,6 +23,20 @@ public final class FileTypeUtil {
         return EntryType.BINARY_RESOURCE;
     }
 
+    public static EntryType classifySample(String path, boolean directory, byte[] sampleBytes) {
+        if (directory) {
+            return EntryType.DIRECTORY;
+        }
+        String lower = path.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".class")) {
+            return EntryType.CLASS;
+        }
+        if (isTextPath(lower) || looksText(sampleBytes)) {
+            return EntryType.TEXT_RESOURCE;
+        }
+        return EntryType.BINARY_RESOURCE;
+    }
+
     public static boolean isTextPath(String lowerPath) {
         return lowerPath.endsWith(".yml")
                 || lowerPath.endsWith(".yaml")

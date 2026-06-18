@@ -34,10 +34,35 @@ The GUI provides:
 - Editable syntax-highlighted bytecode view for `.class` entries in `.jasm`.
 - Editable text resources such as `yml`, `json`, `txt`, `xml`, and `properties`.
 - Binary metadata viewer with path, size, SHA1, and modified state.
+- Lazy JAR loading with progress/cancel, safe large-file preview, class disassembly only after selection, and one-entry-at-a-time translation scanning to avoid GUI freezes on heavy archives.
 - Save current editor buffer into the in-memory project with `Ctrl+S`.
 - Save As JAR.
 - Export Project with raw classes, resources, `.jasm`, and `project.json`.
 - Search, replace string, diff, statistics, call graph, annotation display, and constant pool table.
+- Translate Project workflow with Google Translate preview, per-string checkboxes, and apply-to-memory changes.
+
+## Translate Project
+
+Open a jar, then use:
+
+```txt
+Tools > Translate Project
+```
+
+Select source and target languages, for example `English` to `Vietnamese`. JarByteEditor scans text resources and class string constants, sends candidate strings to Google Translate, then shows a preview table:
+
+- Tick rows you want to keep.
+- Untick rows you do not want to apply.
+- Click `Apply Selected`.
+- Export with `File > Save As JAR`.
+
+JarByteEditor uses the Google Translate web domain, matching the browser flow:
+
+```txt
+https://translate.google.com.vn/?sl=en&tl=vi&op=translate
+```
+
+Internally it requests the same Google Translate web service on `translate.google.com.vn`, without requiring a Cloud Translation API key.
 
 ## CLI
 

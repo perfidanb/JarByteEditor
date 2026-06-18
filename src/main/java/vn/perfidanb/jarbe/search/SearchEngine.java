@@ -26,7 +26,7 @@ public final class SearchEngine {
             if (entry.type() == EntryType.CLASS) {
                 searchClass(entry, needle, type, results);
             } else if ((type == SearchType.ALL || type == SearchType.STRING) && entry.type() == EntryType.TEXT_RESOURCE) {
-                String text = new String(entry.bytes(), StandardCharsets.UTF_8);
+                String text = new String(entry.readBytesOnce(), StandardCharsets.UTF_8);
                 if (text.toLowerCase(Locale.ROOT).contains(needle)) {
                     results.add(new SearchResult("Resource", entry.path(), null, null, excerpt(text, query)));
                 }
@@ -38,7 +38,7 @@ public final class SearchEngine {
     private static void searchClass(JarEntryData entry, String needle, SearchType type, List<SearchResult> results) {
         try {
             ClassNode node = new ClassNode();
-            new ClassReader(entry.bytes()).accept(node, ClassReader.EXPAND_FRAMES);
+            new ClassReader(entry.readBytesOnce()).accept(node, ClassReader.EXPAND_FRAMES);
             if (matches(type, SearchType.CLASS) && contains(node.name, needle)) {
                 results.add(new SearchResult("Class", entry.path(), node.name, null, node.name));
             }

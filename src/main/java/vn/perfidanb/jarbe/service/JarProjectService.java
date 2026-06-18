@@ -13,6 +13,7 @@ import vn.perfidanb.jarbe.util.HashUtil;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -23,30 +24,44 @@ import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
 
 public final class JarProjectService {
+    private static final int ENTRY_SAMPLE_BYTES = 4096;
+
     private final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
     private final AssemblerService assemblerService = new AssemblerService();
     private final AsmStringReplacer stringReplacer = new AsmStringReplacer();
 
     public JarProject open(Path path) throws IOException {
+        return open(path, OpenProgress.noop());
+    }
+
+    public JarProject open(Path path, OpenProgress progress) throws IOException {
         Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(progress, "progress");
         if (!Files.isRegularFile(path)) {
             throw new IOException("Input file does not exist: " + path);
         }
         JarProject project = new JarProject(path, path.getFileName().toString());
         try (JarFile jarFile = new JarFile(path.toFile(), false)) {
             var entries = jarFile.entries();
+            int total = jarFile.size();
+            int completed = 0;
             while (entries.hasMoreElements()) {
-                JarEntry jarEntry = entries.nextElement();
-                byte[] bytes;
-                if (jarEntry.isDirectory()) {
-                    bytes = new byte[0];
-                } else {
-                    try (InputStream in = jarFile.getInputStream(jarEntry)) {
-                        bytes = in.readAllBytes();
-                    }
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedIOException("Open cancelled");
                 }
-                EntryType type = FileTypeUtil.classify(jarEntry.getName(), jarEntry.isDirectory(), bytes);
-                project.putEntry(new JarEntryData(jarEntry.getName(), type, jarEntry.isDirectory(), bytes));
+                JarEntry jarEntry = entries.nextElement();
+                if (jarEntry.isDirectory()) {
+                    project.putEntry(new JarEntryData(jarEntry.getName(), EntryType.DIRECTORY, true, new byte[0]));
+                } else {
+                    String entryName = jarEntry.getName();
+                    long size = jarEntry.getSize();
+                    byte[] sample = readSample(jarFile, jarEntry);
+                    EntryType type = FileTypeUtil.classifySample(entryName, false, sample);
+                    project.putEntry(new JarEntryData(entryName, type, false, size < 0 ? sample.length : size,
+                            sample, () -> readJarEntry(path, entryName)));
+                }
+                completed++;
+                progress.update(completed, total, jarEntry.getName(), Math.max(0, jarEntry.getSize()));
             }
         }
         return project;
@@ -59,12 +74,20 @@ public final class JarProjectService {
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(outputJar))) {
+        try (JarFile sourceJar = sourceJar(project, outputJar);
+             JarOutputStream out = new JarOutputStream(Files.newOutputStream(outputJar))) {
             for (JarEntryData entry : project.entries()) {
                 JarEntry jarEntry = new JarEntry(entry.path());
                 out.putNextEntry(jarEntry);
                 if (!entry.directory()) {
-                    out.write(entry.bytes());
+                    JarEntry sourceEntry = sourceJar == null || entry.modified() ? null : sourceJar.getJarEntry(entry.path());
+                    if (sourceEntry != null) {
+                        try (InputStream in = sourceJar.getInputStream(sourceEntry)) {
+                            in.transferTo(out);
+                        }
+                    } else {
+                        out.write(entry.bytes());
+                    }
                 }
                 out.closeEntry();
             }
@@ -161,14 +184,14 @@ public final class JarProjectService {
                 continue;
             }
             if (entry.type() == EntryType.CLASS) {
-                byte[] before = entry.bytes();
+                byte[] before = entry.readBytesOnce();
                 byte[] after = stringReplacer.replace(before, find, replacement, targetJava);
                 if (!java.util.Arrays.equals(before, after)) {
                     entry.updateBytes(after);
                     changed++;
                 }
             } else if (entry.type() == EntryType.TEXT_RESOURCE) {
-                String text = new String(entry.bytes(), StandardCharsets.UTF_8);
+                String text = new String(entry.readBytesOnce(), StandardCharsets.UTF_8);
                 if (text.contains(find)) {
                     entry.updateBytes(text.replace(find, replacement).getBytes(StandardCharsets.UTF_8));
                     changed++;
@@ -195,5 +218,45 @@ public final class JarProjectService {
             throw new IOException("Unsafe archive path: " + relative);
         }
         return normalized;
+    }
+
+    private static byte[] readSample(JarFile jarFile, JarEntry jarEntry) throws IOException {
+        try (InputStream in = jarFile.getInputStream(jarEntry)) {
+            return in.readNBytes(ENTRY_SAMPLE_BYTES);
+        }
+    }
+
+    private static byte[] readJarEntry(Path jarPath, String entryName) throws IOException {
+        try (JarFile jarFile = new JarFile(jarPath.toFile(), false)) {
+            JarEntry entry = jarFile.getJarEntry(entryName);
+            if (entry == null) {
+                throw new IOException("Missing archive entry: " + entryName);
+            }
+            try (InputStream in = jarFile.getInputStream(entry)) {
+                return in.readAllBytes();
+            }
+        }
+    }
+
+    private static JarFile sourceJar(JarProject project, Path outputJar) throws IOException {
+        Path source = project.sourcePath().orElse(null);
+        if (source == null || !Files.isRegularFile(source)) {
+            return null;
+        }
+        Path sourcePath = source.toAbsolutePath().normalize();
+        Path outputPath = outputJar.toAbsolutePath().normalize();
+        if (sourcePath.equals(outputPath)) {
+            throw new IOException("Choose a different output file. Saving over the opened jar is not safe.");
+        }
+        return new JarFile(source.toFile(), false);
+    }
+
+    public interface OpenProgress {
+        void update(int completed, int total, String entryName, long entrySize);
+
+        static OpenProgress noop() {
+            return (completed, total, entryName, entrySize) -> {
+            };
+        }
     }
 }

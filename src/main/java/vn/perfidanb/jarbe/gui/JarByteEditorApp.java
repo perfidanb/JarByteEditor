@@ -1,21 +1,26 @@
 package vn.perfidanb.jarbe.gui;
 
 import javafx.application.Application;
+import javafx.animation.PauseTransition;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.concurrent.Task;
+import javafx.geometry.Pos;
 import javafx.geometry.Insets;
 import javafx.geometry.Rectangle2D;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.Tab;
@@ -27,6 +32,8 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.ToolBar;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
+import javafx.scene.control.TreeCell;
+import javafx.scene.control.cell.CheckBoxTableCell;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
@@ -34,6 +41,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser.ExtensionFilter;
 import javafx.stage.DirectoryChooser;
@@ -50,21 +58,19 @@ import vn.perfidanb.jarbe.asm.AccessFlagUtil;
 import vn.perfidanb.jarbe.asm.AsmClassAnalyzer;
 import vn.perfidanb.jarbe.asm.ClassVersion;
 import vn.perfidanb.jarbe.asm.ConstantPoolParser;
-import vn.perfidanb.jarbe.diff.DiffEngine;
 import vn.perfidanb.jarbe.editor.EditorSession;
 import vn.perfidanb.jarbe.model.ClassSummary;
 import vn.perfidanb.jarbe.model.ConstantPoolEntry;
-import vn.perfidanb.jarbe.model.DiffReport;
 import vn.perfidanb.jarbe.model.EntryType;
 import vn.perfidanb.jarbe.model.JarEntryData;
 import vn.perfidanb.jarbe.model.JarProject;
-import vn.perfidanb.jarbe.model.ProjectStats;
 import vn.perfidanb.jarbe.model.SearchResult;
+import vn.perfidanb.jarbe.model.TranslationCandidate;
 import vn.perfidanb.jarbe.search.SearchEngine;
 import vn.perfidanb.jarbe.search.SearchType;
-import vn.perfidanb.jarbe.service.CallGraphService;
+import vn.perfidanb.jarbe.service.GoogleTranslateClient;
 import vn.perfidanb.jarbe.service.JarProjectService;
-import vn.perfidanb.jarbe.service.StatisticsEngine;
+import vn.perfidanb.jarbe.service.TranslationEngine;
 import vn.perfidanb.jarbe.util.FileTypeUtil;
 import vn.perfidanb.jarbe.util.HashUtil;
 import vn.perfidanb.jarbe.util.HumanSize;
@@ -73,12 +79,15 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -102,23 +111,52 @@ public final class JarByteEditorApp extends Application {
                     + "|(?<NUMBER>\\b-?\\d+(?:L|F|D)?\\b)"
                     + "|(?<LABEL>\\bL\\d+\\b)"
     );
+    private static final List<LanguageOption> SOURCE_LANGUAGES = List.of(
+            new LanguageOption("Auto detect", "auto"),
+            new LanguageOption("English", "en"),
+            new LanguageOption("Vietnamese", "vi"),
+            new LanguageOption("Japanese", "ja"),
+            new LanguageOption("Korean", "ko"),
+            new LanguageOption("Chinese Simplified", "zh-CN"),
+            new LanguageOption("Thai", "th"),
+            new LanguageOption("French", "fr"),
+            new LanguageOption("German", "de"),
+            new LanguageOption("Spanish", "es"),
+            new LanguageOption("Russian", "ru"),
+            new LanguageOption("Indonesian", "id")
+    );
+    private static final List<LanguageOption> TARGET_LANGUAGES = SOURCE_LANGUAGES.stream()
+            .filter(language -> !language.code().equals("auto"))
+            .toList();
+    private static final long MAX_TEXT_EDITOR_BYTES = 2L * 1024 * 1024;
+    private static final long MAX_CLASS_EDITOR_BYTES = 4L * 1024 * 1024;
+    private static final long MAX_CLASS_DETAILS_BYTES = 8L * 1024 * 1024;
+    private static final long MAX_HASH_BYTES = 2L * 1024 * 1024;
+    private static final long MAX_AUTO_ANALYZE_BYTES = 96L * 1024 * 1024;
+    private static final int MAX_AUTO_ANALYZE_CLASSES = 2500;
+    private static final int MAX_EDITOR_CHARS = 1_500_000;
+    private static final int MAX_HIGHLIGHT_CHARS = 500_000;
+    private static final int MAX_TREE_LEAVES_PER_GROUP = 30_000;
 
     private final JarProjectService projectService = new JarProjectService();
-    private final StatisticsEngine statisticsEngine = new StatisticsEngine();
     private final SearchEngine searchEngine = new SearchEngine();
-    private final CallGraphService callGraphService = new CallGraphService();
-    private final DiffEngine diffEngine = new DiffEngine();
     private final AsmClassAnalyzer analyzer = new AsmClassAnalyzer();
     private final ConstantPoolParser constantPoolParser = new ConstantPoolParser();
+    private final PauseTransition sidebarSearchDelay = new PauseTransition(javafx.util.Duration.millis(180));
 
     private Stage stage;
     private JarProject project;
     private EditorSession editorSession;
     private JarEntryData currentEntry;
     private boolean loadingEditor;
+    private boolean highlightingEnabled = true;
     private boolean dirty;
+    private Task<EntryTreeItem> treeBuildTask;
+    private Task<EntryViewData> entryLoadTask;
+    private Task<ProjectViewData> projectViewsTask;
 
     private final TreeView<String> tree = new TreeView<>();
+    private final TextField sidebarSearch = new TextField();
     private final CodeArea editor = new CodeArea();
     private final TextArea details = readOnlyArea();
     private final TextArea searchResults = readOnlyArea();
@@ -182,22 +220,34 @@ public final class JarByteEditorApp extends Application {
                 item("Refresh Call Graph", this::refreshProjectViews)
         );
 
-        return new MenuBar(file, edit, view);
+        Menu tools = new Menu("Tools");
+        tools.getItems().add(item("Translate Project", this::showTranslateDialog));
+
+        return new MenuBar(file, edit, view, tools);
     }
 
     private ToolBar buildToolbar() {
         Button open = new Button("Open JAR");
+        open.setGraphic(FileIconFactory.actionIcon("open-action-icon"));
         open.setOnAction(event -> openJar());
         Button save = new Button("Save");
+        save.setGraphic(FileIconFactory.actionIcon("save-action-icon"));
         save.setOnAction(event -> saveCurrent());
         Button saveAs = new Button("Save As JAR");
+        saveAs.setGraphic(FileIconFactory.actionIcon("archive-action-icon"));
         saveAs.setOnAction(event -> saveAsJar());
         Button export = new Button("Export");
+        export.setGraphic(FileIconFactory.actionIcon("export-action-icon"));
         export.setOnAction(event -> exportProject());
         Button find = new Button("Find");
+        find.setGraphic(FileIconFactory.actionIcon("find-action-icon"));
         find.setOnAction(event -> showFindDialog());
         Button replace = new Button("Replace");
+        replace.setGraphic(FileIconFactory.actionIcon("replace-action-icon"));
         replace.setOnAction(event -> showReplaceDialog());
+        Button translate = new Button("Translate");
+        translate.setGraphic(FileIconFactory.actionIcon("translate-action-icon"));
+        translate.setOnAction(event -> showTranslateDialog());
 
         target.getItems().addAll("Original", "8", "11", "17", "21", "25");
         target.getSelectionModel().selectFirst();
@@ -205,7 +255,7 @@ public final class JarByteEditorApp extends Application {
         target.setPrefWidth(110);
         progress.setVisible(false);
         progress.setPrefSize(22, 22);
-        ToolBar toolBar = new ToolBar(open, save, saveAs, export, find, replace, new Label("Target"), target, progress);
+        ToolBar toolBar = new ToolBar(open, save, saveAs, export, find, replace, translate, new Label("Target"), target, progress);
         toolBar.setPrefHeight(38);
         return toolBar;
     }
@@ -213,6 +263,24 @@ public final class JarByteEditorApp extends Application {
     private SplitPane buildMainSplit() {
         tree.setShowRoot(true);
         tree.setRoot(new TreeItem<>("No project"));
+        tree.getStyleClass().add("project-tree");
+        tree.setCellFactory(view -> new TreeCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setGraphic(null);
+                    return;
+                }
+                setText(item);
+                if (getTreeItem() instanceof EntryTreeItem entryTreeItem) {
+                    setGraphic(FileIconFactory.forTreeEntry(entryTreeItem.path(), item));
+                } else {
+                    setGraphic(FileIconFactory.forTreeEntry(null, item));
+                }
+            }
+        });
         tree.getSelectionModel().selectedItemProperty().addListener((obs, old, selected) -> {
             if (selected instanceof EntryTreeItem item) {
                 showEntry(item.path());
@@ -233,7 +301,8 @@ public final class JarByteEditorApp extends Application {
         tree.setPrefWidth(320);
         tabs.setMinWidth(520);
 
-        SplitPane split = new SplitPane(tree, tabs);
+        BorderPane sidebar = buildSidebar();
+        SplitPane split = new SplitPane(sidebar, tabs);
         split.widthProperty().addListener((obs, oldWidth, newWidth) -> {
             double width = newWidth.doubleValue();
             if (width > 0) {
@@ -242,6 +311,29 @@ public final class JarByteEditorApp extends Application {
         });
         split.setDividerPositions(0.28);
         return split;
+    }
+
+    private BorderPane buildSidebar() {
+        sidebarSearch.setPromptText("Search...");
+        sidebarSearch.getStyleClass().add("sidebar-search");
+        sidebarSearchDelay.setOnFinished(event -> buildTree());
+        sidebarSearch.textProperty().addListener((obs, old, text) -> sidebarSearchDelay.playFromStart());
+
+        Node searchIcon = FileIconFactory.actionIcon("find-action-icon");
+        searchIcon.getStyleClass().add("sidebar-search-icon");
+        searchIcon.setMouseTransparent(true);
+        StackPane searchBox = new StackPane(sidebarSearch, searchIcon);
+        searchBox.getStyleClass().add("sidebar-search-box");
+        StackPane.setAlignment(searchIcon, Pos.CENTER_RIGHT);
+        StackPane.setMargin(searchIcon, new Insets(0, 10, 0, 0));
+
+        BorderPane sidebar = new BorderPane();
+        sidebar.getStyleClass().add("sidebar");
+        sidebar.setCenter(tree);
+        sidebar.setBottom(searchBox);
+        sidebar.setMinWidth(220);
+        sidebar.setPrefWidth(330);
+        return sidebar;
     }
 
     private HBox buildStatusBar() {
@@ -296,12 +388,63 @@ public final class JarByteEditorApp extends Application {
         if (file == null) {
             return;
         }
-        runTask("Opening " + file.getName(), new Task<JarProject>() {
+        runOpenTask(file);
+    }
+
+    private void runOpenTask(File file) {
+        Dialog<ButtonType> openDialog = new Dialog<>();
+        openDialog.setTitle("Opening JAR");
+        TextArea log = readOnlyArea();
+        log.getStyleClass().add("translation-log");
+        ProgressBar bar = new ProgressBar(0);
+        bar.setMaxWidth(Double.MAX_VALUE);
+        Label phase = new Label("Preparing...");
+        VBox content = new VBox(10, phase, bar, log);
+        content.setPrefSize(700, 360);
+        VBox.setVgrow(log, Priority.ALWAYS);
+        openDialog.getDialogPane().setContent(content);
+        ButtonType cancel = new ButtonType("Cancel");
+        openDialog.getDialogPane().getButtonTypes().add(cancel);
+
+        Task<JarProject> task = new Task<>() {
             @Override
             protected JarProject call() throws Exception {
-                return projectService.open(file.toPath());
+                updateMessage("Opening " + file.getName());
+                return projectService.open(file.toPath(), (completed, total, entryName, entrySize) -> {
+                    updateProgress(completed, Math.max(total, 1));
+                    if (completed == 1 || completed == total || completed % 50 == 0) {
+                        updateMessage("Reading " + completed + "/" + total + ": " + entryName);
+                    }
+                });
             }
-        }, opened -> {
+        };
+
+        phase.textProperty().bind(task.messageProperty());
+        bar.progressProperty().bind(task.progressProperty());
+        task.messageProperty().addListener((obs, old, message) -> {
+            if (message != null && !message.isBlank()) {
+                log.appendText(message + System.lineSeparator());
+            }
+        });
+        openDialog.setOnCloseRequest(event -> {
+            if (task.isRunning()) {
+                task.cancel(true);
+            }
+        });
+        openDialog.setResultConverter(button -> {
+            if (button == cancel && task.isRunning()) {
+                task.cancel(true);
+                status.setText("Open cancelled");
+            }
+            return button;
+        });
+
+        status.setText("Opening " + file.getName());
+        progress.setVisible(true);
+        task.setOnSucceeded(event -> {
+            progress.setVisible(false);
+            openDialog.close();
+            JarProject opened = task.getValue();
             project = opened;
             editorSession = new EditorSession(project);
             currentEntry = null;
@@ -310,6 +453,23 @@ public final class JarByteEditorApp extends Application {
             refreshProjectViews();
             status.setText("Opened " + project.displayName());
         });
+        task.setOnCancelled(event -> {
+            progress.setVisible(false);
+            openDialog.close();
+            status.setText("Open cancelled");
+        });
+        task.setOnFailed(event -> {
+            progress.setVisible(false);
+            openDialog.close();
+            Throwable error = task.getException();
+            showError("Open failed", error == null ? "Unknown error" : error.getMessage());
+            status.setText("Open failed");
+        });
+
+        Thread thread = new Thread(task, "jarbe-open");
+        thread.setDaemon(true);
+        thread.start();
+        openDialog.show();
     }
 
     private void saveCurrent() {
@@ -388,36 +548,124 @@ public final class JarByteEditorApp extends Application {
             return;
         }
         project.find(path).ifPresent(entry -> {
+            if (entryLoadTask != null && entryLoadTask.isRunning()) {
+                entryLoadTask.cancel(true);
+            }
             currentEntry = entry;
             loadingEditor = true;
-            try {
-                if (entry.type() == EntryType.CLASS || entry.type() == EntryType.TEXT_RESOURCE) {
-                    editor.setEditable(true);
-                    setEditorText(editorSession.editableText(entry));
-                } else {
-                    editor.setEditable(false);
-                    setEditorText(binaryInfo(entry));
+            highlightingEnabled = false;
+            editor.setEditable(false);
+            setEditorText("Loading " + entry.path() + "...");
+            details.setText(lightweightInfo(entry));
+            constantPoolTable.getItems().clear();
+            loadingEditor = false;
+            status.setText("Loading " + entry.path());
+
+            Task<EntryViewData> task = new Task<>() {
+                @Override
+                protected EntryViewData call() {
+                    updateMessage("Loading " + entry.path());
+                    return buildEntryView(entry);
                 }
-                dirty = false;
-                refreshEntryDetails(entry);
-                refreshHighlight();
-                status.setText("Selected " + entry.path());
-            } catch (RuntimeException e) {
+            };
+            entryLoadTask = task;
+            task.setOnSucceeded(event -> {
+                if (task != entryLoadTask || currentEntry != entry) {
+                    return;
+                }
+                EntryViewData view = task.getValue();
+                loadingEditor = true;
+                try {
+                    editor.setEditable(view.editable());
+                    highlightingEnabled = view.highlight();
+                    setEditorText(view.editorText());
+                    details.setText(view.details().text());
+                    constantPoolTable.getItems().setAll(view.details().constantPool());
+                    dirty = false;
+                    status.setText(view.statusText());
+                } finally {
+                    loadingEditor = false;
+                }
+            });
+            task.setOnFailed(event -> {
+                if (task != entryLoadTask || currentEntry != entry) {
+                    return;
+                }
+                Throwable error = task.getException();
+                loadingEditor = true;
                 editor.setEditable(false);
-                setEditorText(binaryInfo(entry) + System.lineSeparator() + "ASM parse error: " + e.getMessage());
-                refreshEntryDetails(entry);
-            } finally {
+                highlightingEnabled = false;
+                setEditorText(lightweightInfo(entry) + System.lineSeparator()
+                        + "Load error: " + (error == null ? "Unknown error" : error.getMessage()));
+                details.setText(lightweightInfo(entry));
                 loadingEditor = false;
-            }
+                status.setText("Failed to load " + entry.path());
+            });
+            Thread thread = new Thread(task, "jarbe-entry-loader");
+            thread.setDaemon(true);
+            thread.start();
         });
     }
 
     private void refreshEntryDetails(JarEntryData entry) {
-        constantPoolTable.getItems().clear();
-        StringBuilder text = new StringBuilder(binaryInfo(entry)).append(System.lineSeparator());
+        EntryDetails entryDetails = buildEntryDetails(entry);
+        details.setText(entryDetails.text());
+        constantPoolTable.getItems().setAll(entryDetails.constantPool());
+    }
+
+    private EntryViewData buildEntryView(JarEntryData entry) {
+        boolean editable = false;
+        boolean highlight = false;
+        String editorText;
         if (entry.type() == EntryType.CLASS) {
-            try {
-                ClassSummary summary = analyzer.analyze(entry.bytes());
+            if (entry.byteSize() > MAX_CLASS_EDITOR_BYTES) {
+                editorText = largeEntryInfo(entry, "Class is too large for safe inline disassembly.");
+            } else {
+                editorText = editorSession.editableText(entry);
+                if (editorText.length() > MAX_EDITOR_CHARS) {
+                    editable = false;
+                    editorText = largeEntryInfo(entry, "Disassembled text is too large for the inline editor.");
+                } else {
+                    editable = true;
+                    highlight = editorText.length() <= MAX_HIGHLIGHT_CHARS;
+                }
+            }
+        } else if (entry.type() == EntryType.TEXT_RESOURCE) {
+            if (entry.byteSize() > MAX_TEXT_EDITOR_BYTES) {
+                editorText = largeEntryInfo(entry, "Text resource is too large for safe inline editing.")
+                        + System.lineSeparator()
+                        + previewSample(entry);
+            } else {
+                editorText = editorSession.editableText(entry);
+                if (editorText.length() > MAX_EDITOR_CHARS) {
+                    editorText = largeEntryInfo(entry, "Text resource is too large for the inline editor.");
+                } else {
+                    editable = true;
+                    highlight = editorText.length() <= MAX_HIGHLIGHT_CHARS;
+                }
+            }
+        } else {
+            editorText = lightweightInfo(entry);
+        }
+        EntryDetails entryDetails = buildEntryDetails(entry);
+        String statusText = editable ? "Selected " + entry.path() : "Selected " + entry.path() + " (safe preview)";
+        return new EntryViewData(entry, editorText, editable, highlight, entryDetails, statusText);
+    }
+
+    private EntryDetails buildEntryDetails(JarEntryData entry) {
+        List<ConstantPoolEntry> pool = new ArrayList<>();
+        StringBuilder text = new StringBuilder(detailsInfo(entry)).append(System.lineSeparator());
+        if (entry.type() == EntryType.CLASS) {
+            if (entry.byteSize() > MAX_CLASS_DETAILS_BYTES) {
+                text.append(System.lineSeparator())
+                        .append("Class analysis skipped: entry is larger than ")
+                        .append(HumanSize.format(MAX_CLASS_DETAILS_BYTES))
+                        .append(".")
+                        .append(System.lineSeparator());
+            } else {
+                try {
+                    byte[] bytes = entry.bytes();
+                    ClassSummary summary = analyzer.analyze(bytes);
                 text.append(System.lineSeparator())
                         .append("Class: ").append(summary.name()).append(System.lineSeparator())
                         .append("Super: ").append(summary.superName()).append(System.lineSeparator())
@@ -429,16 +677,21 @@ public final class JarByteEditorApp extends Application {
                 if (!summary.annotations().isEmpty()) {
                     text.append("Annotations: ").append(String.join(", ", summary.annotations())).append(System.lineSeparator());
                 }
-                constantPoolTable.getItems().setAll(constantPoolParser.parse(entry.bytes()));
-            } catch (RuntimeException e) {
-                text.append(System.lineSeparator()).append("ASM parse error: ").append(e.getMessage()).append(System.lineSeparator());
+                    pool = constantPoolParser.parse(bytes);
+                } catch (RuntimeException e) {
+                    text.append(System.lineSeparator()).append("ASM parse error: ").append(e.getMessage()).append(System.lineSeparator());
+                }
             }
         }
-        details.setText(text.toString());
+        return new EntryDetails(text.toString(), pool);
     }
 
     private void refreshHighlight() {
         String text = editor.getText() == null ? "" : editor.getText();
+        if (!highlightingEnabled || text.length() > MAX_HIGHLIGHT_CHARS) {
+            editor.setStyleSpans(0, plainHighlighting(text.length()));
+            return;
+        }
         editor.setStyleSpans(0, computeHighlighting(text));
     }
 
@@ -446,33 +699,125 @@ public final class JarByteEditorApp extends Application {
         if (project == null) {
             return;
         }
-        ProjectStats projectStats = statisticsEngine.calculate(project);
-        stats.setText(projectStats.toDisplayString());
-        callGraph.setText(callGraphService.toDisplayString(project));
-        diffResults.setText(diffEngine.diff(originalSnapshot(project), project).toDisplayString());
-    }
-
-    private JarProject originalSnapshot(JarProject source) {
-        JarProject snapshot = new JarProject(source.sourcePath().orElse(null), source.displayName() + " original");
-        for (JarEntryData entry : source.entries()) {
-            snapshot.putEntry(new JarEntryData(entry.path(), entry.type(), entry.directory(), entry.originalBytes()));
+        if (projectViewsTask != null && projectViewsTask.isRunning()) {
+            projectViewsTask.cancel(true);
         }
-        return snapshot;
+        JarProject currentProject = project;
+        stats.setText("Calculating...");
+        callGraph.setText("Calculating...");
+        diffResults.setText("Calculating...");
+        Task<ProjectViewData> task = new Task<>() {
+            @Override
+            protected ProjectViewData call() {
+                return buildProjectViewData(currentProject);
+            }
+        };
+        projectViewsTask = task;
+        task.setOnSucceeded(event -> {
+            if (task != projectViewsTask || project != currentProject) {
+                return;
+            }
+            ProjectViewData view = task.getValue();
+            stats.setText(view.statsText());
+            callGraph.setText(view.callGraphText());
+            diffResults.setText(view.diffText());
+        });
+        task.setOnFailed(event -> {
+            if (task != projectViewsTask || project != currentProject) {
+                return;
+            }
+            Throwable error = task.getException();
+            String message = "Analysis failed: " + (error == null ? "Unknown error" : error.getMessage());
+            stats.setText(message);
+            callGraph.setText(message);
+            diffResults.setText(currentDiffText(currentProject));
+        });
+        Thread thread = new Thread(task, "jarbe-project-views");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private void buildTree() {
+        if (project == null) {
+            tree.setRoot(new EntryTreeItem("No project", null));
+            return;
+        }
+        if (treeBuildTask != null && treeBuildTask.isRunning()) {
+            treeBuildTask.cancel(true);
+        }
+        JarProject currentProject = project;
+        String filter = sidebarSearch.getText() == null ? "" : sidebarSearch.getText().strip().toLowerCase(Locale.ROOT);
+        Task<EntryTreeItem> task = new Task<>() {
+            @Override
+            protected EntryTreeItem call() {
+                return createTreeRoot(currentProject, filter, this::isCancelled);
+            }
+        };
+        treeBuildTask = task;
+        if (tree.getRoot() == null || tree.getRoot().getValue() == null || tree.getRoot().getValue().equals("No project")) {
+            tree.setRoot(new EntryTreeItem("Loading tree...", null));
+        }
+        task.setOnSucceeded(event -> {
+            if (task != treeBuildTask || project != currentProject) {
+                return;
+            }
+            tree.setRoot(task.getValue());
+        });
+        task.setOnFailed(event -> {
+            if (task != treeBuildTask || project != currentProject) {
+                return;
+            }
+            tree.setRoot(new EntryTreeItem("Tree failed", null));
+        });
+        Thread thread = new Thread(task, "jarbe-tree-builder");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private static EntryTreeItem createTreeRoot(JarProject project, String filter, BooleanSupplier cancelled) {
+        List<JarEntryData> classEntries = project.classEntries();
+        List<JarEntryData> resourceEntries = project.resourceEntries();
         EntryTreeItem root = new EntryTreeItem(project.displayName(), null);
+        EntryTreeItem classes = new EntryTreeItem("classes (" + classEntries.size() + ")", "classes/");
+        EntryTreeItem files = new EntryTreeItem("files (" + resourceEntries.size() + ")", "files/");
+        root.getChildren().add(classes);
+        root.getChildren().add(files);
+
+        int shownClasses = addGroupedEntries(classes, "classes", classEntries, filter, cancelled);
+        int shownFiles = addGroupedEntries(files, "files", resourceEntries, filter, cancelled);
+        if (shownClasses >= MAX_TREE_LEAVES_PER_GROUP) {
+            classes.getChildren().add(new EntryTreeItem("More entries hidden. Use search...", null));
+        }
+        if (shownFiles >= MAX_TREE_LEAVES_PER_GROUP) {
+            files.getChildren().add(new EntryTreeItem("More entries hidden. Use search...", null));
+        }
+
+        root.setExpanded(true);
+        classes.setExpanded(!filter.isBlank());
+        files.setExpanded(!filter.isBlank());
+        return root;
+    }
+
+    private static int addGroupedEntries(EntryTreeItem group, String groupKey, List<JarEntryData> entries,
+                                         String filter, BooleanSupplier cancelled) {
         Map<String, EntryTreeItem> nodes = new HashMap<>();
-        nodes.put("", root);
-        for (JarEntryData entry : project.sortedEntries()) {
+        nodes.put(groupKey, group);
+        int shown = 0;
+        for (JarEntryData entry : entries) {
+            if (cancelled.getAsBoolean() || shown >= MAX_TREE_LEAVES_PER_GROUP) {
+                return shown;
+            }
+            if (!filter.isBlank() && !entry.path().toLowerCase(Locale.ROOT).contains(filter)) {
+                continue;
+            }
             String[] parts = entry.path().split("/");
-            String parentPath = "";
-            EntryTreeItem parent = root;
+            String parentPath = groupKey;
+            EntryTreeItem parent = group;
             for (int i = 0; i < parts.length; i++) {
                 if (parts[i].isBlank()) {
                     continue;
                 }
-                String currentPath = parentPath.isBlank() ? parts[i] : parentPath + "/" + parts[i];
+                String currentPath = parentPath + "/" + parts[i];
                 boolean leaf = i == parts.length - 1;
                 EntryTreeItem node = nodes.get(currentPath);
                 if (node == null) {
@@ -483,9 +828,9 @@ public final class JarByteEditorApp extends Application {
                 parent = node;
                 parentPath = currentPath;
             }
+            shown++;
         }
-        root.setExpanded(true);
-        tree.setRoot(root);
+        return shown;
     }
 
     private void showFindDialog() {
@@ -507,11 +852,19 @@ public final class JarByteEditorApp extends Application {
         dialog.getDialogPane().setContent(grid);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
         dialog.showAndWait().filter(button -> button == ButtonType.OK).ifPresent(button -> {
-            List<SearchResult> results = searchEngine.search(project, query.getText(), type.getValue());
-            searchResults.setText(results.isEmpty()
-                    ? "No results"
-                    : String.join(System.lineSeparator(), results.stream().map(SearchResult::compact).toList()));
-            status.setText("Search results: " + results.size());
+            String text = query.getText();
+            SearchType searchType = type.getValue();
+            runTask("Searching project", new Task<List<SearchResult>>() {
+                @Override
+                protected List<SearchResult> call() {
+                    return searchEngine.search(project, text, searchType);
+                }
+            }, results -> {
+                searchResults.setText(results.isEmpty()
+                        ? "No results"
+                        : String.join(System.lineSeparator(), results.stream().map(SearchResult::compact).toList()));
+                status.setText("Search results: " + results.size());
+            });
         });
     }
 
@@ -538,21 +891,238 @@ public final class JarByteEditorApp extends Application {
                 showError("Replace String", "Find text must not be empty");
                 return;
             }
+            String findText = find.getText();
+            String replacementText = replacement.getText();
             if (button == preview) {
-                List<SearchResult> results = searchEngine.search(project, find.getText(), SearchType.STRING);
-                searchResults.setText(results.isEmpty()
-                        ? "No results"
-                        : String.join(System.lineSeparator(), results.stream().map(SearchResult::compact).toList()));
-                status.setText("Preview matches: " + results.size());
+                runTask("Previewing matches", new Task<List<SearchResult>>() {
+                    @Override
+                    protected List<SearchResult> call() {
+                        return searchEngine.search(project, findText, SearchType.STRING);
+                    }
+                }, results -> {
+                    searchResults.setText(results.isEmpty()
+                            ? "No results"
+                            : String.join(System.lineSeparator(), results.stream().map(SearchResult::compact).toList()));
+                    status.setText("Preview matches: " + results.size());
+                });
             } else if (button == apply) {
-                int changed = projectService.replaceString(project, find.getText(), replacement.getText(), selectedTarget());
-                refreshProjectViews();
-                if (currentEntry != null) {
-                    showEntry(currentEntry.path());
-                }
-                status.setText("Replace applied to entries: " + changed);
+                Integer targetVersion = selectedTarget();
+                runTask("Replacing strings", new Task<Integer>() {
+                    @Override
+                    protected Integer call() {
+                        return projectService.replaceString(project, findText, replacementText, targetVersion);
+                    }
+                }, changed -> {
+                    refreshProjectViews();
+                    if (currentEntry != null) {
+                        showEntry(currentEntry.path());
+                    }
+                    status.setText("Replace applied to entries: " + changed);
+                });
             }
         });
+    }
+
+    private void showTranslateDialog() {
+        if (project == null) {
+            showInfo("No project", "Open a jar first.");
+            return;
+        }
+        if (!confirmDiscardIfDirty()) {
+            return;
+        }
+
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("Translate Project");
+        ComboBox<LanguageOption> source = new ComboBox<>();
+        source.getItems().setAll(SOURCE_LANGUAGES);
+        source.getSelectionModel().select(findLanguage(SOURCE_LANGUAGES, "en"));
+        ComboBox<LanguageOption> targetLanguage = new ComboBox<>();
+        targetLanguage.getItems().setAll(TARGET_LANGUAGES);
+        targetLanguage.getSelectionModel().select(findLanguage(TARGET_LANGUAGES, "vi"));
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.addRow(0, new Label("From"), source);
+        grid.addRow(1, new Label("To"), targetLanguage);
+        dialog.getDialogPane().setContent(grid);
+        ButtonType preview = new ButtonType("Preview");
+        dialog.getDialogPane().getButtonTypes().addAll(preview, ButtonType.CANCEL);
+        dialog.showAndWait().filter(button -> button == preview).ifPresent(button -> {
+            LanguageOption sourceLanguage = source.getValue();
+            LanguageOption target = targetLanguage.getValue();
+            if (sourceLanguage == null || target == null) {
+                showError("Translate Project", "Select source and target languages.");
+                return;
+            }
+            runTranslateTask(sourceLanguage, target);
+        });
+    }
+
+    private void runTranslateTask(LanguageOption sourceLanguage, LanguageOption targetLanguage) {
+        Dialog<ButtonType> progressDialog = new Dialog<>();
+        progressDialog.setTitle("Translation Progress");
+        progressDialog.getDialogPane().getStyleClass().add("translation-progress-dialog");
+        TextArea log = readOnlyArea();
+        log.getStyleClass().add("translation-log");
+        log.setWrapText(true);
+        ProgressBar bar = new ProgressBar(0);
+        bar.setMaxWidth(Double.MAX_VALUE);
+        Label phase = new Label("Preparing translation...");
+        VBox content = new VBox(10, phase, bar, log);
+        content.setPrefSize(760, 430);
+        VBox.setVgrow(log, Priority.ALWAYS);
+        progressDialog.getDialogPane().setContent(content);
+        ButtonType cancel = new ButtonType("Cancel");
+        progressDialog.getDialogPane().getButtonTypes().add(cancel);
+
+        Task<List<TranslationCandidate>> task = new Task<>() {
+            @Override
+            protected List<TranslationCandidate> call() throws Exception {
+                updateMessage("Scanning project...");
+                return new TranslationEngine(new GoogleTranslateClient())
+                        .preview(project, sourceLanguage.code(), targetLanguage.code(), new TranslationEngine.TranslationProgress() {
+                            @Override
+                            public void log(String message) {
+                                updateMessage(message);
+                            }
+
+                            @Override
+                            public void update(int completed, int total) {
+                                updateProgress(completed, total);
+                            }
+                        });
+            }
+        };
+
+        phase.textProperty().bind(task.messageProperty());
+        bar.progressProperty().bind(task.progressProperty());
+        task.messageProperty().addListener((obs, old, message) -> {
+            if (message != null && !message.isBlank()) {
+                log.appendText(message + System.lineSeparator());
+            }
+        });
+        progressDialog.setOnCloseRequest(event -> {
+            if (task.isRunning()) {
+                task.cancel(true);
+            }
+        });
+        progressDialog.setResultConverter(button -> {
+            if (button == cancel && task.isRunning()) {
+                task.cancel(true);
+                status.setText("Translation cancelled");
+            }
+            return button;
+        });
+
+        status.setText("Translating " + sourceLanguage.name() + " to " + targetLanguage.name());
+        progress.setVisible(true);
+        task.setOnSucceeded(event -> {
+            progress.setVisible(false);
+            progressDialog.close();
+            showTranslationPreview(task.getValue());
+        });
+        task.setOnCancelled(event -> {
+            progress.setVisible(false);
+            progressDialog.close();
+            status.setText("Translation cancelled");
+        });
+        task.setOnFailed(event -> {
+            progress.setVisible(false);
+            progressDialog.close();
+            Throwable error = task.getException();
+            showError("Translation failed", error == null ? "Unknown error" : error.getMessage());
+            status.setText("Translation failed");
+        });
+
+        Thread thread = new Thread(task, "jarbe-translate");
+        thread.setDaemon(true);
+        thread.start();
+        progressDialog.show();
+    }
+
+    private void showTranslationPreview(List<TranslationCandidate> candidates) {
+        if (candidates.isEmpty()) {
+            showInfo("Translate Project", "No translatable text was found, or Google returned no changes.");
+            status.setText("Translate: no changes");
+            return;
+        }
+
+        TableView<TranslationPreviewRow> table = new TableView<>();
+        table.setEditable(true);
+        table.getStyleClass().add("translation-preview-table");
+        table.getItems().setAll(candidates.stream().map(TranslationPreviewRow::new).toList());
+
+        TableColumn<TranslationPreviewRow, Boolean> use = new TableColumn<>("Use");
+        use.setCellValueFactory(row -> row.getValue().selectedProperty());
+        use.setCellFactory(CheckBoxTableCell.forTableColumn(use));
+        use.setPrefWidth(60);
+
+        TableColumn<TranslationPreviewRow, String> path = new TableColumn<>("File");
+        path.setCellValueFactory(row -> row.getValue().pathProperty());
+        path.setPrefWidth(240);
+
+        TableColumn<TranslationPreviewRow, String> location = new TableColumn<>("Location");
+        location.setCellValueFactory(row -> row.getValue().locationProperty());
+        location.setPrefWidth(120);
+
+        TableColumn<TranslationPreviewRow, String> original = new TableColumn<>("Original");
+        original.setCellValueFactory(row -> row.getValue().originalProperty());
+        original.setPrefWidth(300);
+
+        TableColumn<TranslationPreviewRow, String> translated = new TableColumn<>("Translated");
+        translated.setCellValueFactory(row -> row.getValue().translatedProperty());
+        translated.setPrefWidth(340);
+
+        table.getColumns().add(use);
+        table.getColumns().add(path);
+        table.getColumns().add(location);
+        table.getColumns().add(original);
+        table.getColumns().add(translated);
+
+        CheckBox selectAll = new CheckBox("Select all");
+        selectAll.setSelected(true);
+        selectAll.selectedProperty().addListener((obs, old, selected) ->
+                table.getItems().forEach(row -> row.selectedProperty().set(selected)));
+        Label summary = new Label("Changes: " + candidates.size());
+        HBox controls = new HBox(12, selectAll, summary);
+        controls.setPadding(new Insets(0, 0, 8, 0));
+        VBox content = new VBox(controls, table);
+        content.setPrefSize(1080, 560);
+        VBox.setVgrow(table, Priority.ALWAYS);
+
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("Translate Preview");
+        ButtonType apply = new ButtonType("Apply Selected");
+        dialog.getDialogPane().getButtonTypes().addAll(apply, ButtonType.CANCEL);
+        dialog.getDialogPane().setContent(content);
+        dialog.showAndWait().filter(button -> button == apply).ifPresent(button -> {
+            List<TranslationCandidate> selected = table.getItems().stream()
+                    .filter(TranslationPreviewRow::selected)
+                    .map(TranslationPreviewRow::candidate)
+                    .toList();
+            if (selected.isEmpty()) {
+                status.setText("Translate: nothing selected");
+                return;
+            }
+            int changed = new TranslationEngine(new GoogleTranslateClient()).apply(project, selected);
+            refreshProjectViews();
+            if (currentEntry != null) {
+                String pathToReload = currentEntry.path();
+                currentEntry = null;
+                showEntry(pathToReload);
+            }
+            status.setText("Translate applied to entries: " + changed);
+            showInfo("Translate Project", "Applied selected translations to " + changed + " entries in memory. Use Save As JAR to export.");
+        });
+    }
+
+    private static LanguageOption findLanguage(List<LanguageOption> languages, String code) {
+        return languages.stream()
+                .filter(language -> language.code().equals(code))
+                .findFirst()
+                .orElse(languages.getFirst());
     }
 
     private Integer selectedTarget() {
@@ -561,6 +1131,44 @@ public final class JarByteEditorApp extends Application {
             return null;
         }
         return Integer.parseInt(selected);
+    }
+
+    private ProjectViewData buildProjectViewData(JarProject source) {
+        List<JarEntryData> classEntries = source.classEntries();
+        List<JarEntryData> resourceEntries = source.resourceEntries();
+        long classBytes = classEntries.stream().mapToLong(JarEntryData::byteSize).sum();
+        long resourceBytes = resourceEntries.stream().mapToLong(JarEntryData::byteSize).sum();
+        long loadedEntries = source.entries().stream().filter(JarEntryData::loaded).count();
+        String diffText = currentDiffText(source);
+        String statsText = "Classes: " + classEntries.size() + System.lineSeparator()
+                + "Resources: " + resourceEntries.size() + System.lineSeparator()
+                + "Class bytes: " + HumanSize.format(classBytes) + System.lineSeparator()
+                + "Resource bytes: " + HumanSize.format(resourceBytes) + System.lineSeparator()
+                + "Loaded entries: " + loadedEntries + "/" + source.entries().size() + System.lineSeparator()
+                + System.lineSeparator()
+                + "Safe mode: project-wide class analysis is disabled." + System.lineSeparator()
+                + "A class is disassembled only when you select it.";
+        String callGraphText = "Call graph is not built automatically in safe mode." + System.lineSeparator()
+                + "This prevents loading and parsing every class after opening a large jar.";
+        return new ProjectViewData(statsText, callGraphText, diffText);
+    }
+
+    private String currentDiffText(JarProject source) {
+        List<JarEntryData> modified = source.modifiedEntries();
+        if (modified.isEmpty()) {
+            return "No differences";
+        }
+        StringBuilder builder = new StringBuilder("Modified Entries:").append(System.lineSeparator());
+        int shown = 0;
+        for (JarEntryData entry : modified) {
+            if (shown >= 2000) {
+                builder.append("  ... ").append(modified.size() - shown).append(" more").append(System.lineSeparator());
+                break;
+            }
+            builder.append("  ").append(entry.type()).append("  ").append(entry.path()).append(System.lineSeparator());
+            shown++;
+        }
+        return builder.toString();
     }
 
     private boolean confirmDiscardIfDirty() {
@@ -682,6 +1290,12 @@ public final class JarByteEditorApp extends Application {
         return spansBuilder.create();
     }
 
+    private static StyleSpans<Collection<String>> plainHighlighting(int length) {
+        StyleSpansBuilder<Collection<String>> spansBuilder = new StyleSpansBuilder<>();
+        spansBuilder.add(Collections.singleton("jasm-plain"), Math.max(0, length));
+        return spansBuilder.create();
+    }
+
     private static String opcodePattern() {
         return Arrays.stream(Printer.OPCODES)
                 .filter(name -> name != null && !name.isBlank())
@@ -689,17 +1303,64 @@ public final class JarByteEditorApp extends Application {
                 .collect(Collectors.joining("|"));
     }
 
-    private String binaryInfo(JarEntryData entry) {
+    private String lightweightInfo(JarEntryData entry) {
         StringBuilder builder = new StringBuilder();
         builder.append("Path: ").append(entry.path()).append(System.lineSeparator())
                 .append("Type: ").append(entry.type()).append(System.lineSeparator())
-                .append("Size: ").append(HumanSize.format(entry.size())).append(System.lineSeparator())
-                .append("SHA1: ").append(HashUtil.sha1(entry.bytes())).append(System.lineSeparator())
+                .append("Size: ").append(HumanSize.format(entry.byteSize())).append(System.lineSeparator())
+                .append("Loaded: ").append(entry.loaded()).append(System.lineSeparator())
                 .append("Modified: ").append(entry.modified()).append(System.lineSeparator());
         if (FileTypeUtil.isBinaryPreviewPath(entry.path())) {
             builder.append("Binary viewer: metadata only").append(System.lineSeparator());
         }
         return builder.toString();
+    }
+
+    private String detailsInfo(JarEntryData entry) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("Path: ").append(entry.path()).append(System.lineSeparator())
+                .append("Type: ").append(entry.type()).append(System.lineSeparator())
+                .append("Size: ").append(HumanSize.format(entry.byteSize())).append(System.lineSeparator())
+                .append("Loaded: ").append(entry.loaded()).append(System.lineSeparator())
+                .append("SHA1: ").append(sha1Display(entry)).append(System.lineSeparator())
+                .append("Modified: ").append(entry.modified()).append(System.lineSeparator());
+        if (FileTypeUtil.isBinaryPreviewPath(entry.path())) {
+            builder.append("Binary viewer: metadata only").append(System.lineSeparator());
+        }
+        return builder.toString();
+    }
+
+    private String sha1Display(JarEntryData entry) {
+        if (!entry.loaded() && entry.byteSize() > MAX_HASH_BYTES) {
+            return "deferred for large entry";
+        }
+        try {
+            return HashUtil.sha1(entry.bytes());
+        } catch (RuntimeException e) {
+            return "unavailable: " + e.getMessage();
+        }
+    }
+
+    private String largeEntryInfo(JarEntryData entry, String reason) {
+        return lightweightInfo(entry)
+                + System.lineSeparator()
+                + reason + System.lineSeparator()
+                + "Inline editor disabled to keep the GUI responsive." + System.lineSeparator()
+                + "Use Export Project if you need the full file content.";
+    }
+
+    private String previewSample(JarEntryData entry) {
+        byte[] sample = entry.sampleBytes();
+        if (sample.length == 0) {
+            return "Sample: empty";
+        }
+        String preview = new String(sample, StandardCharsets.UTF_8)
+                .replace("\0", "\\0");
+        if (sample.length < entry.byteSize()) {
+            preview += System.lineSeparator() + "... sample only, full entry is "
+                    + HumanSize.format(entry.byteSize()) + ".";
+        }
+        return "Sample:" + System.lineSeparator() + preview;
     }
 
     private String defaultOutputName() {
@@ -709,6 +1370,16 @@ public final class JarByteEditorApp extends Application {
         String name = project.displayName();
         int dot = name.lastIndexOf('.');
         return dot > 0 ? name.substring(0, dot) + "-fixed.jar" : name + "-fixed.jar";
+    }
+
+    private record EntryDetails(String text, List<ConstantPoolEntry> constantPool) {
+    }
+
+    private record EntryViewData(JarEntryData entry, String editorText, boolean editable, boolean highlight,
+                                 EntryDetails details, String statusText) {
+    }
+
+    private record ProjectViewData(String statsText, String callGraphText, String diffText) {
     }
 
     private static final class EntryTreeItem extends TreeItem<String> {
