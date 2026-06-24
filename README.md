@@ -29,13 +29,16 @@ java -jar target/JarByteEditor.jar
 
 The GUI provides:
 
-- Dark JavaFX layout with menu bar, tree explorer, editor, status bar.
+- Modern, dark JavaFX layout powered by the **AtlantaFX PrimerDark** theme.
+- **Chrome-style Multi-Tab Editor**: Open and edit multiple `.class` or resource files simultaneously without losing state.
 - `Open JAR` for `.jar` and `.zip`.
-- Editable syntax-highlighted bytecode view for `.class` entries in `.jasm`.
+- **Dual-Mode Class Editing**: View and edit classes in either `.jasm` bytecode assembly or full **Java source code** (decompiled via CFR).
+- **Live Java Compilation**: Edit Java source code and recompile on the fly. The compiler automatically uses a `libs` directory or custom JARs added via `Project > Manage Dependencies`.
 - Editable text resources such as `yml`, `json`, `txt`, `xml`, and `properties`.
 - Binary metadata viewer with path, size, SHA1, and modified state.
 - Lazy JAR loading with progress/cancel, safe large-file preview, class disassembly only after selection, and one-entry-at-a-time translation scanning to avoid GUI freezes on heavy archives.
-- Save current editor buffer into the in-memory project with `Ctrl+S`.
+- Save current editor buffer (compiles Java or assembles JASM) into the in-memory project with `Ctrl+S`.
+- Save all modified tabs and export project with `Ctrl+Shift+S`.
 - Save As JAR.
 - Export Project with raw classes, resources, `.jasm`, and `project.json`.
 - Search, replace string, diff, statistics, call graph, annotation display, and constant pool table.
@@ -131,15 +134,21 @@ END
 
 Supported editable instruction families include no-argument opcodes, variable opcodes, integer opcodes, field calls, method calls, type instructions, jumps, labels, line numbers, `LDC`, `IINC`, and `MULTIANEWARRAY`. Classes with advanced instructions are still opened and exported; unchanged class bytes are preserved during exported-project assembly.
 
-## Bytecode Policy
+## Bytecode & Compilation Policy
 
-JarByteEditor does not decompile Java source and does not compile Java source back to classes. Class edits are handled with ASM and written with:
+JarByteEditor provides two distinct modes for editing Java classes:
 
-```java
-ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS
-```
+1. **JASM (Bytecode Assembly)**:
+   Class edits in JASM are handled with ASM and written with:
+   ```java
+   ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS
+   ```
+   The loader keeps class metadata in ASM tree form, including signatures, modules, records, nests, permitted subclasses, annotations, inner classes, source attributes, bootstrap methods, and debug tables when the corresponding methods are not rewritten.
 
-The loader keeps class metadata in ASM tree form, including signatures, modules, records, nests, permitted subclasses, annotations, inner classes, source attributes, bootstrap methods, and debug tables when the corresponding methods are not rewritten.
+2. **Java Mode**:
+   JarByteEditor integrates the **CFR Decompiler** to convert bytecode back into readable Java source.
+   When editing in Java mode, pressing `Ctrl+S` passes the code to the standard `javax.tools.JavaCompiler`. 
+   To prevent `ClassNotFoundException` during live compilation, JarByteEditor automatically adds `.jar` files from a `libs` directory adjacent to your target JAR, and allows you to manually attach extra dependencies via the **Project > Manage Dependencies** menu.
 
 ## Project Export
 

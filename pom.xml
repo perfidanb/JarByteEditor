@@ -6,7 +6,7 @@
 
     <groupId>vn.perfidanb</groupId>
     <artifactId>JarByteEditor</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <name>JarByteEditor Ultimate Edition</name>
     <description>Desktop and CLI bytecode editor for JAR archives.</description>
 
@@ -59,6 +59,12 @@
         </dependency>
 
         <dependency>
+            <groupId>io.github.mkpaz</groupId>
+            <artifactId>atlantafx-base</artifactId>
+            <version>2.0.1</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.ow2.asm</groupId>
             <artifactId>asm</artifactId>
             <version>${asm.version}</version>
@@ -72,6 +78,12 @@
             <groupId>org.ow2.asm</groupId>
             <artifactId>asm-util</artifactId>
             <version>${asm.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.benf</groupId>
+            <artifactId>cfr</artifactId>
+            <version>0.152</version>
         </dependency>
 
         <dependency>

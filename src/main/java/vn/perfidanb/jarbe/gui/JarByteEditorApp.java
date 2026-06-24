@@ -17,6 +17,7 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
@@ -111,6 +112,22 @@ public final class JarByteEditorApp extends Application {
                     + "|(?<NUMBER>\\b-?\\d+(?:L|F|D)?\\b)"
                     + "|(?<LABEL>\\bL\\d+\\b)"
     );
+
+    private static final String[] JAVA_KEYWORDS = new String[]{
+            "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue",
+            "default", "do", "double", "else", "enum", "extends", "final", "finally", "float", "for", "goto", "if",
+            "implements", "import", "instanceof", "int", "interface", "long", "native", "new", "package", "private",
+            "protected", "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this",
+            "throw", "throws", "transient", "try", "void", "volatile", "while", "var", "record", "yield"
+    };
+
+    private static final Pattern JAVA_HIGHLIGHT_PATTERN = Pattern.compile(
+            "(?<COMMENT>//[^\\n]*|/\\*(?:.|\\R)*?\\*/)"
+                    + "|(?<STRING>\"(?:\\\\.|[^\"\\\\])*\")"
+                    + "|(?<KEYWORD>\\b(?:" + String.join("|", JAVA_KEYWORDS) + ")\\b)"
+                    + "|(?<ANNOTATION>@[\\w]+)"
+                    + "|(?<NUMBER>\\b\\d+(?:\\.\\d+)?(?:[fFdDlL])?\\b)"
+    );
     private static final List<LanguageOption> SOURCE_LANGUAGES = List.of(
             new LanguageOption("Auto detect", "auto"),
             new LanguageOption("English", "en"),
@@ -157,7 +174,8 @@ public final class JarByteEditorApp extends Application {
 
     private final TreeView<String> tree = new TreeView<>();
     private final TextField sidebarSearch = new TextField();
-    private final CodeArea editor = new CodeArea();
+    private final TabPane fileTabs = new TabPane();
+    private final Map<String, FileTab> openTabs = new HashMap<>();
     private final TextArea details = readOnlyArea();
     private final TextArea searchResults = readOnlyArea();
     private final TextArea diffResults = readOnlyArea();
@@ -171,8 +189,8 @@ public final class JarByteEditorApp extends Application {
 
     @Override
     public void start(Stage primaryStage) {
+        javafx.application.Application.setUserAgentStylesheet(new atlantafx.base.theme.PrimerDark().getUserAgentStylesheet());
         this.stage = primaryStage;
-        stage.setTitle("JarByteEditor");
         ResponsiveMetrics metrics = ResponsiveMetrics.from(Screen.getPrimary().getVisualBounds());
         editorFontSize = metrics.editorFontSize();
         BorderPane root = buildRoot();
@@ -189,7 +207,6 @@ public final class JarByteEditorApp extends Application {
         root.setTop(new VBox(buildMenu(), buildToolbar()));
         root.setCenter(buildMainSplit());
         root.setBottom(buildStatusBar());
-        configureEditor();
         configureConstantPoolTable();
         return root;
     }
@@ -200,22 +217,23 @@ public final class JarByteEditorApp extends Application {
         MenuItem save = item("Save", this::saveCurrent);
         save.setAccelerator(new KeyCodeCombination(KeyCode.S, KeyCombination.CONTROL_DOWN));
         MenuItem saveAs = item("Save As JAR", this::saveAsJar);
+        saveAs.setAccelerator(new KeyCodeCombination(KeyCode.S, KeyCombination.CONTROL_DOWN, KeyCombination.SHIFT_DOWN));
         MenuItem export = item("Export Project", this::exportProject);
         file.getItems().addAll(open, save, saveAs, export);
 
         Menu edit = new Menu("Edit");
         edit.getItems().addAll(
-                item("Undo", editor::undo),
-                item("Redo", editor::redo),
-                item("Copy", editor::copy),
-                item("Paste", editor::paste),
+                item("Undo", () -> { if (getActiveTab() != null) getActiveTab().getEditor().undo(); }),
+                item("Redo", () -> { if (getActiveTab() != null) getActiveTab().getEditor().redo(); }),
+                item("Copy", () -> { if (getActiveTab() != null) getActiveTab().getEditor().copy(); }),
+                item("Paste", () -> { if (getActiveTab() != null) getActiveTab().getEditor().paste(); }),
                 item("Find", this::showFindDialog),
                 item("Replace String", this::showReplaceDialog)
         );
 
         Menu view = new Menu("View");
         view.getItems().addAll(
-                item("Refresh Colors", this::refreshHighlight),
+                item("Refresh Colors", () -> { if (getActiveTab() != null) refreshHighlight(getActiveTab()); }),
                 item("Refresh Statistics", this::refreshProjectViews),
                 item("Refresh Call Graph", this::refreshProjectViews)
         );
@@ -223,7 +241,11 @@ public final class JarByteEditorApp extends Application {
         Menu tools = new Menu("Tools");
         tools.getItems().add(item("Translate Project", this::showTranslateDialog));
 
-        return new MenuBar(file, edit, view, tools);
+        Menu projectMenu = new Menu("Project");
+        projectMenu.getItems().addAll(
+                item("Manage Dependencies", this::showDependenciesDialog)
+        );
+        return new MenuBar(file, edit, view, tools, projectMenu);
     }
 
     private ToolBar buildToolbar() {
@@ -287,22 +309,38 @@ public final class JarByteEditorApp extends Application {
             }
         });
 
-        TabPane tabs = new TabPane();
-        tabs.getTabs().add(tab("Editor", new VirtualizedScrollPane<>(editor)));
-        tabs.getTabs().add(tab("Details", details));
-        tabs.getTabs().add(tab("Constant Pool", constantPoolTable));
-        tabs.getTabs().add(tab("Search", searchResults));
-        tabs.getTabs().add(tab("Diff", diffResults));
-        tabs.getTabs().add(tab("Statistics", stats));
-        tabs.getTabs().add(tab("Call Graph", callGraph));
-        tabs.getTabs().forEach(tab -> tab.setClosable(false));
+        TabPane toolsTabs = new TabPane();
+        toolsTabs.getTabs().add(tab("Details", details));
+        toolsTabs.getTabs().add(tab("Constant Pool", constantPoolTable));
+        toolsTabs.getTabs().add(tab("Search", searchResults));
+        toolsTabs.getTabs().add(tab("Diff", diffResults));
+        toolsTabs.getTabs().add(tab("Statistics", stats));
+        toolsTabs.getTabs().add(tab("Call Graph", callGraph));
+        toolsTabs.getTabs().forEach(tab -> tab.setClosable(false));
 
         tree.setMinWidth(180);
         tree.setPrefWidth(320);
-        tabs.setMinWidth(520);
+        toolsTabs.setMinWidth(520);
+
+        fileTabs.setTabClosingPolicy(TabPane.TabClosingPolicy.ALL_TABS);
+        fileTabs.getSelectionModel().selectedItemProperty().addListener((obs, old, selectedTab) -> {
+            if (selectedTab != null) {
+                FileTab ft = (FileTab) selectedTab.getUserData();
+                if (ft != null) {
+                    currentEntry = ft.getEntry();
+                    refreshEntryDetails(currentEntry);
+                }
+            } else {
+                currentEntry = null;
+            }
+        });
+
+        SplitPane centerSplit = new SplitPane(fileTabs, toolsTabs);
+        centerSplit.setOrientation(javafx.geometry.Orientation.VERTICAL);
+        centerSplit.setDividerPositions(0.7);
 
         BorderPane sidebar = buildSidebar();
-        SplitPane split = new SplitPane(sidebar, tabs);
+        SplitPane split = new SplitPane(sidebar, centerSplit);
         split.widthProperty().addListener((obs, oldWidth, newWidth) -> {
             double width = newWidth.doubleValue();
             if (width > 0) {
@@ -311,6 +349,11 @@ public final class JarByteEditorApp extends Application {
         });
         split.setDividerPositions(0.28);
         return split;
+    }
+
+    private FileTab getActiveTab() {
+        Tab selected = fileTabs.getSelectionModel().getSelectedItem();
+        return selected != null ? (FileTab) selected.getUserData() : null;
     }
 
     private BorderPane buildSidebar() {
@@ -343,22 +386,6 @@ public final class JarByteEditorApp extends Application {
         return box;
     }
 
-    private void configureEditor() {
-        editor.setWrapText(false);
-        editor.setParagraphGraphicFactory(LineNumberFactory.get(editor));
-        editor.getStyleClass().add("bytecode-editor");
-        editor.setStyle(editorFontStyle());
-        editor.textProperty().addListener((obs, old, text) -> {
-            if (!loadingEditor && currentEntry != null && editor.isEditable()) {
-                dirty = true;
-                status.setText("Modified: " + currentEntry.path());
-            }
-        });
-        editor.multiPlainChanges()
-                .successionEnds(Duration.ofMillis(120))
-                .subscribe(ignore -> refreshHighlight());
-    }
-
     private void configureConstantPoolTable() {
         TableColumn<ConstantPoolEntry, Number> index = new TableColumn<>("#");
         index.setCellValueFactory(value -> new SimpleIntegerProperty(value.getValue().index()));
@@ -375,6 +402,44 @@ public final class JarByteEditorApp extends Application {
         constantPoolTable.getColumns().add(index);
         constantPoolTable.getColumns().add(kind);
         constantPoolTable.getColumns().add(value);
+    }
+
+    private void showDependenciesDialog() {
+        if (project == null || editorSession == null) {
+            showInfo("No Project", "Please open a JAR first.");
+            return;
+        }
+        Dialog<Void> dialog = new Dialog<>();
+        dialog.setTitle("Manage Dependencies");
+        dialog.setHeaderText("Add extra JAR files for Java Compilation");
+        
+        ListView<File> listView = new ListView<>(editorSession.getUserDependencies());
+        
+        Button addBtn = new Button("Add JAR");
+        addBtn.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.getExtensionFilters().add(new ExtensionFilter("JAR Files", "*.jar"));
+            List<File> files = chooser.showOpenMultipleDialog(stage);
+            if (files != null) {
+                editorSession.getUserDependencies().addAll(files);
+            }
+        });
+        
+        Button removeBtn = new Button("Remove");
+        removeBtn.setOnAction(e -> {
+            File selected = listView.getSelectionModel().getSelectedItem();
+            if (selected != null) {
+                editorSession.getUserDependencies().remove(selected);
+            }
+        });
+        
+        HBox btns = new HBox(10, addBtn, removeBtn);
+        VBox vbox = new VBox(10, listView, btns);
+        vbox.setPrefSize(400, 300);
+        
+        dialog.getDialogPane().setContent(vbox);
+        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+        dialog.showAndWait();
     }
 
     private void openJar() {
@@ -448,7 +513,8 @@ public final class JarByteEditorApp extends Application {
             project = opened;
             editorSession = new EditorSession(project);
             currentEntry = null;
-            dirty = false;
+            fileTabs.getTabs().clear();
+            openTabs.clear();
             buildTree();
             refreshProjectViews();
             status.setText("Opened " + project.displayName());
@@ -473,19 +539,43 @@ public final class JarByteEditorApp extends Application {
     }
 
     private void saveCurrent() {
-        if (currentEntry == null || !editor.isEditable()) {
+        FileTab active = getActiveTab();
+        if (active == null || !active.getEditor().isEditable()) {
             status.setText("Nothing editable is selected");
             return;
         }
+        JarEntryData entry = active.getEntry();
         try {
-            editorSession.applyText(currentEntry, editor.getText(), selectedTarget());
-            dirty = false;
-            refreshEntryDetails(currentEntry);
+            if (active.isJavaMode()) {
+                editorSession.applyJavaText(entry, active.getEditor().getText());
+            } else {
+                editorSession.applyText(entry, active.getEditor().getText(), selectedTarget());
+            }
+            active.setDirty(false);
+            refreshEntryDetails(entry);
             refreshProjectViews();
-            status.setText("Saved in memory: " + currentEntry.path());
-        } catch (RuntimeException e) {
-            showError("Invalid bytecode", e.getMessage());
+            status.setText("Saved in memory: " + entry.path());
+        } catch (Exception e) {
+            showError("Save failed", e.getMessage());
         }
+    }
+
+    private void saveAllDirty() {
+        for (FileTab tab : openTabs.values()) {
+            if (tab.isDirty() && tab.getEditor().isEditable()) {
+                try {
+                    if (tab.isJavaMode()) {
+                        editorSession.applyJavaText(tab.getEntry(), tab.getEditor().getText());
+                    } else {
+                        editorSession.applyText(tab.getEntry(), tab.getEditor().getText(), selectedTarget());
+                    }
+                    tab.setDirty(false);
+                } catch (Exception e) {
+                    showError("Save failed for " + tab.getEntry().path(), e.getMessage());
+                }
+            }
+        }
+        refreshProjectViews();
     }
 
     private void saveAsJar() {
@@ -493,11 +583,12 @@ public final class JarByteEditorApp extends Application {
             showInfo("No project", "Open a jar first.");
             return;
         }
-        if (dirty && !askYesNo("Save current editor changes before exporting?")) {
+        boolean anyDirty = openTabs.values().stream().anyMatch(FileTab::isDirty);
+        if (anyDirty && !askYesNo("Save current editor changes before exporting?")) {
             return;
         }
-        if (dirty) {
-            saveCurrent();
+        if (anyDirty) {
+            saveAllDirty();
         }
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Save As JAR");
@@ -521,8 +612,9 @@ public final class JarByteEditorApp extends Application {
             showInfo("No project", "Open a jar first.");
             return;
         }
-        if (dirty) {
-            saveCurrent();
+        boolean anyDirty = openTabs.values().stream().anyMatch(FileTab::isDirty);
+        if (anyDirty) {
+            saveAllDirty();
         }
         DirectoryChooser chooser = new DirectoryChooser();
         chooser.setTitle("Export Project");
@@ -543,68 +635,78 @@ public final class JarByteEditorApp extends Application {
         if (project == null || path == null || path.isBlank()) {
             return;
         }
-        if (!confirmDiscardIfDirty()) {
-            tree.getSelectionModel().clearSelection();
+        FileTab existingTab = openTabs.get(path);
+        if (existingTab != null) {
+            fileTabs.getSelectionModel().select(existingTab.getTab());
             return;
         }
         project.find(path).ifPresent(entry -> {
-            if (entryLoadTask != null && entryLoadTask.isRunning()) {
-                entryLoadTask.cancel(true);
-            }
-            currentEntry = entry;
-            loadingEditor = true;
-            highlightingEnabled = false;
-            editor.setEditable(false);
-            setEditorText("Loading " + entry.path() + "...");
-            details.setText(lightweightInfo(entry));
-            constantPoolTable.getItems().clear();
-            loadingEditor = false;
-            status.setText("Loading " + entry.path());
+            FileTab newTab = new FileTab(entry);
+            newTab.getTab().setUserData(newTab);
+            newTab.getTab().setOnClosed(e -> openTabs.remove(path));
+            
+            newTab.getLanguageChoice().getSelectionModel().selectedItemProperty().addListener((obs, old, val) -> {
+                if (val != null) {
+                    boolean isJava = "Java".equals(val);
+                    newTab.setJavaMode(isJava);
+                    reloadFileTabContent(newTab);
+                }
+            });
 
-            Task<EntryViewData> task = new Task<>() {
-                @Override
-                protected EntryViewData call() {
-                    updateMessage("Loading " + entry.path());
-                    return buildEntryView(entry);
-                }
-            };
-            entryLoadTask = task;
-            task.setOnSucceeded(event -> {
-                if (task != entryLoadTask || currentEntry != entry) {
-                    return;
-                }
-                EntryViewData view = task.getValue();
-                loadingEditor = true;
-                try {
-                    editor.setEditable(view.editable());
-                    highlightingEnabled = view.highlight();
-                    setEditorText(view.editorText());
-                    details.setText(view.details().text());
-                    constantPoolTable.getItems().setAll(view.details().constantPool());
-                    dirty = false;
-                    status.setText(view.statusText());
-                } finally {
-                    loadingEditor = false;
-                }
-            });
-            task.setOnFailed(event -> {
-                if (task != entryLoadTask || currentEntry != entry) {
-                    return;
-                }
-                Throwable error = task.getException();
-                loadingEditor = true;
-                editor.setEditable(false);
-                highlightingEnabled = false;
-                setEditorText(lightweightInfo(entry) + System.lineSeparator()
-                        + "Load error: " + (error == null ? "Unknown error" : error.getMessage()));
-                details.setText(lightweightInfo(entry));
-                loadingEditor = false;
-                status.setText("Failed to load " + entry.path());
-            });
-            Thread thread = new Thread(task, "jarbe-entry-loader");
-            thread.setDaemon(true);
-            thread.start();
+            fileTabs.getTabs().add(newTab.getTab());
+            openTabs.put(path, newTab);
+            fileTabs.getSelectionModel().select(newTab.getTab());
+            
+            configureEditor(newTab);
+            reloadFileTabContent(newTab);
         });
+    }
+
+    private void reloadFileTabContent(FileTab fileTab) {
+        JarEntryData entry = fileTab.getEntry();
+        fileTab.getEditor().setEditable(false);
+        fileTab.getEditor().replaceText(0, fileTab.getEditor().getLength(), "Loading " + entry.path() + "...");
+        status.setText("Loading " + entry.path());
+
+        Task<EntryViewData> task = new Task<>() {
+            @Override
+            protected EntryViewData call() {
+                updateMessage("Loading " + entry.path());
+                return buildEntryView(entry, fileTab.isJavaMode());
+            }
+        };
+
+        task.setOnSucceeded(event -> {
+            EntryViewData view = task.getValue();
+            fileTab.getEditor().replaceText(0, fileTab.getEditor().getLength(), view.editorText());
+            fileTab.getEditor().setEditable(view.editable());
+            fileTab.setDirty(false);
+            if (view.highlight()) {
+                refreshHighlight(fileTab);
+            }
+            if (getActiveTab() == fileTab) {
+                details.setText(view.details().text());
+                constantPoolTable.getItems().setAll(view.details().constantPool());
+            }
+            status.setText(view.statusText());
+        });
+
+        task.setOnFailed(event -> {
+            fileTab.getEditor().replaceText(0, fileTab.getEditor().getLength(), "Load error: " + task.getException().getMessage());
+            status.setText("Failed to load " + entry.path());
+        });
+
+        Thread thread = new Thread(task, "jarbe-entry-loader");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void configureEditor(FileTab fileTab) {
+        CodeArea editor = fileTab.getEditor();
+        editor.setStyle(editorFontStyle());
+        editor.multiPlainChanges()
+                .successionEnds(Duration.ofMillis(120))
+                .subscribe(ignore -> refreshHighlight(fileTab));
     }
 
     private void refreshEntryDetails(JarEntryData entry) {
@@ -613,7 +715,7 @@ public final class JarByteEditorApp extends Application {
         constantPoolTable.getItems().setAll(entryDetails.constantPool());
     }
 
-    private EntryViewData buildEntryView(JarEntryData entry) {
+    private EntryViewData buildEntryView(JarEntryData entry, boolean javaMode) {
         boolean editable = false;
         boolean highlight = false;
         String editorText;
@@ -621,13 +723,17 @@ public final class JarByteEditorApp extends Application {
             if (entry.byteSize() > MAX_CLASS_EDITOR_BYTES) {
                 editorText = largeEntryInfo(entry, "Class is too large for safe inline disassembly.");
             } else {
-                editorText = editorSession.editableText(entry);
-                if (editorText.length() > MAX_EDITOR_CHARS) {
-                    editable = false;
-                    editorText = largeEntryInfo(entry, "Disassembled text is too large for the inline editor.");
-                } else {
-                    editable = true;
-                    highlight = editorText.length() <= MAX_HIGHLIGHT_CHARS;
+                try {
+                    editorText = javaMode ? editorSession.javaEditableText(entry) : editorSession.editableText(entry);
+                    if (editorText.length() > MAX_EDITOR_CHARS) {
+                        editable = false;
+                        editorText = largeEntryInfo(entry, "Disassembled text is too large for the inline editor.");
+                    } else {
+                        editable = true;
+                        highlight = !javaMode && editorText.length() <= MAX_HIGHLIGHT_CHARS;
+                    }
+                } catch (Exception e) {
+                    editorText = "Error decompiling class:\n" + e.getMessage();
                 }
             }
         } else if (entry.type() == EntryType.TEXT_RESOURCE) {
@@ -641,7 +747,7 @@ public final class JarByteEditorApp extends Application {
                     editorText = largeEntryInfo(entry, "Text resource is too large for the inline editor.");
                 } else {
                     editable = true;
-                    highlight = editorText.length() <= MAX_HIGHLIGHT_CHARS;
+                    highlight = false;
                 }
             }
         } else {
@@ -686,13 +792,14 @@ public final class JarByteEditorApp extends Application {
         return new EntryDetails(text.toString(), pool);
     }
 
-    private void refreshHighlight() {
+    private void refreshHighlight(FileTab fileTab) {
+        CodeArea editor = fileTab.getEditor();
         String text = editor.getText() == null ? "" : editor.getText();
         if (!highlightingEnabled || text.length() > MAX_HIGHLIGHT_CHARS) {
             editor.setStyleSpans(0, plainHighlighting(text.length()));
             return;
         }
-        editor.setStyleSpans(0, computeHighlighting(text));
+        editor.setStyleSpans(0, computeHighlighting(text, fileTab.isJavaMode()));
     }
 
     private void refreshProjectViews() {
@@ -1260,28 +1367,35 @@ public final class JarByteEditorApp extends Application {
                 + editorFontSize + "px;";
     }
 
-    private void setEditorText(String text) {
-        String value = text == null ? "" : text;
-        editor.replaceText(0, editor.getLength(), value);
-        refreshHighlight();
-    }
 
-    private static StyleSpans<Collection<String>> computeHighlighting(String text) {
-        Matcher matcher = JASM_HIGHLIGHT_PATTERN.matcher(text);
+
+    private static StyleSpans<Collection<String>> computeHighlighting(String text, boolean isJavaMode) {
+        Matcher matcher = (isJavaMode ? JAVA_HIGHLIGHT_PATTERN : JASM_HIGHLIGHT_PATTERN).matcher(text);
         int lastKeywordEnd = 0;
         StyleSpansBuilder<Collection<String>> spansBuilder = new StyleSpansBuilder<>();
         while (matcher.find()) {
-            String styleClass =
-                    matcher.group("COMMENT") != null ? "jasm-comment" :
-                    matcher.group("STRING") != null ? "jasm-string" :
-                    matcher.group("KEYWORD") != null ? "jasm-keyword" :
-                    matcher.group("OPCODE") != null ? "jasm-opcode" :
-                    matcher.group("ACCESS") != null ? "jasm-access" :
-                    matcher.group("DESCRIPTOR") != null ? "jasm-descriptor" :
-                    matcher.group("OWNER") != null ? "jasm-owner" :
-                    matcher.group("NUMBER") != null ? "jasm-number" :
-                    matcher.group("LABEL") != null ? "jasm-label" :
-                    "jasm-plain";
+            String styleClass = "jasm-plain";
+            if (isJavaMode) {
+                styleClass =
+                        matcher.group("COMMENT") != null ? "java-comment" :
+                        matcher.group("STRING") != null ? "java-string" :
+                        matcher.group("KEYWORD") != null ? "java-keyword" :
+                        matcher.group("ANNOTATION") != null ? "java-annotation" :
+                        matcher.group("NUMBER") != null ? "java-number" :
+                        "java-plain";
+            } else {
+                styleClass =
+                        matcher.group("COMMENT") != null ? "jasm-comment" :
+                        matcher.group("STRING") != null ? "jasm-string" :
+                        matcher.group("KEYWORD") != null ? "jasm-keyword" :
+                        matcher.group("OPCODE") != null ? "jasm-opcode" :
+                        matcher.group("ACCESS") != null ? "jasm-access" :
+                        matcher.group("DESCRIPTOR") != null ? "jasm-descriptor" :
+                        matcher.group("OWNER") != null ? "jasm-owner" :
+                        matcher.group("NUMBER") != null ? "jasm-number" :
+                        matcher.group("LABEL") != null ? "jasm-label" :
+                        "jasm-plain";
+            }
             spansBuilder.add(Collections.singleton("jasm-plain"), matcher.start() - lastKeywordEnd);
             spansBuilder.add(Collections.singleton(styleClass), matcher.end() - matcher.start());
             lastKeywordEnd = matcher.end();

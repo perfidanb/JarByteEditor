@@ -125,6 +125,28 @@
     -fx-font-weight: bold;
 }
 
+.bytecode-editor .java-keyword {
+    -fx-fill: #c678dd;
+    -fx-font-weight: bold;
+}
+
+.bytecode-editor .java-string {
+    -fx-fill: #98c379;
+}
+
+.bytecode-editor .java-comment {
+    -fx-fill: #5c6370;
+    -fx-font-style: italic;
+}
+
+.bytecode-editor .java-annotation {
+    -fx-fill: #e5c07b;
+}
+
+.bytecode-editor .java-number {
+    -fx-fill: #d19a66;
+}
+
 .project-tree {
     -fx-background-color: #181a1f;
 }
