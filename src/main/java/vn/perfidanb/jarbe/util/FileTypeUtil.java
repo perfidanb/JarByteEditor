@@ -40,6 +40,7 @@ public final class FileTypeUtil {
     public static boolean isTextPath(String lowerPath) {
         return lowerPath.endsWith(".yml")
                 || lowerPath.endsWith(".yaml")
+                || lowerPath.endsWith(".smali")
                 || lowerPath.endsWith(".json")
                 || lowerPath.endsWith(".txt")
                 || lowerPath.endsWith(".xml")

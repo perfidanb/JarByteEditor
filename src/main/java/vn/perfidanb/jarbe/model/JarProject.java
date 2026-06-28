@@ -12,15 +12,25 @@ import java.util.Optional;
 public final class JarProject {
     private final Path sourcePath;
     private final String displayName;
+    private final Path extractedDir;
     private final Map<String, JarEntryData> entries = new LinkedHashMap<>();
 
     public JarProject(Path sourcePath, String displayName) {
+        this(sourcePath, displayName, null);
+    }
+
+    public JarProject(Path sourcePath, String displayName, Path extractedDir) {
         this.sourcePath = sourcePath;
         this.displayName = Objects.requireNonNull(displayName, "displayName");
+        this.extractedDir = extractedDir;
     }
 
     public Optional<Path> sourcePath() {
         return Optional.ofNullable(sourcePath);
+    }
+
+    public Optional<Path> extractedDir() {
+        return Optional.ofNullable(extractedDir);
     }
 
     public String displayName() {
@@ -33,6 +43,10 @@ public final class JarProject {
 
     public Optional<JarEntryData> find(String path) {
         return Optional.ofNullable(entries.get(path));
+    }
+
+    public void removeEntry(String path) {
+        entries.remove(path);
     }
 
     public Collection<JarEntryData> entries() {

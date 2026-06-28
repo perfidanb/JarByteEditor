@@ -2,18 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.2] - 2026-06-24
+## [1.0.2] - 2026-06-29
 
 ### Added
-- **CFR Decompiler Integration**: You can now decompile class files into Java source code directly within the editor.
-- **Live Java Compilation**: Edit decompiled Java code and seamlessly compile it back into bytecode with `Ctrl+S`.
-- **Compiler Dependency Manager**: Easily add extra `.jar` files to your compilation classpath via `Project > Manage Dependencies`.
-- **Multi-Tab Workspace**: Introduced a Chrome-style tabbed editor allowing you to work on multiple class or resource files simultaneously without losing state.
-- **Java Syntax Highlighting**: Added a full-fledged highlighting engine for Java syntax when in Java editing mode.
-- **Modern UI Theme**: Completely modernized the user interface with the `AtlantaFX PrimerDark` theme for a sleek, developer-friendly experience.
-- **Auto-Scanning `libs` Folder**: The compiler now automatically scans for a `libs` directory adjacent to your target JAR file to populate the classpath.
-- **Save Actions**: Added `Ctrl+S` to compile/assemble the active tab, and `Ctrl+Shift+S` to save all modified tabs and execute a project export.
+- **Android APK & DEX Support**: Directly open `.apk` files and edit `classes.dex` using the Smali assembler/disassembler (`dexlib2`, `smali`, `baksmali`).
+- **In-Memory Virtual Tree for Smali**: Replaced the disk-heavy Smali extraction logic with an on-the-fly virtual memory mapping. This completely eliminates 100% disk usage errors, prevents OS crashes, and significantly reduces RAM overhead when handling large APKs (gigabyte-scale).
+- **Dual-Protection Watchdog**: Added a background thread that monitors available Disk and RAM during critical operations, automatically terminating processes if resources fall below safe thresholds (Anti-Crash mechanism).
+- **Floating Search Results Modal**: Global searches now open a non-modal popup containing a list of matches.
+- **Search Line Navigation**: Search results in text resources (including `.smali` and `.jasm`) now compute the exact line number. Double-clicking a search result automatically opens the file and jumps the editor cursor to the correct line.
+- **Auto-Assemble on Export**: When exporting/saving an APK, only modified Smali files are patched and re-assembled back into the `.dex` container via a lightweight temporary directory workflow.
 
-### Changed
-- The bytecode editing engine no longer restricts you to just `.jasm`. Users can seamlessly switch between `.jasm` assembly and full Java mode.
-- The global details and constant pool views have been reworked to dynamically sync with the currently active tab.
+### Fixed
+- Fixed an issue where extracting multiple `.dex` files simultaneously would cause disk space exhaustion and crash the user's machine.
+- Fixed `IndentingWriter` dependency mismatch by explicitly utilizing `BaksmaliWriter` directly for Smali formatting.

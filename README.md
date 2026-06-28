@@ -1,6 +1,6 @@
 # JarByteEditor
 
-JarByteEditor is a Java 21 desktop and CLI tool for opening `.jar` / `.zip` files, inspecting JVM bytecode with ASM, editing `.jasm` text, editing resources, and packaging the result back into a jar.
+JarByteEditor is a Java 21 desktop and CLI tool for opening `.jar` / `.zip` / `.apk` files, inspecting JVM bytecode with ASM, editing Android `.dex` bytecode via Smali, editing `.jasm` text, editing resources, and packaging the result back into a jar or apk.
 
 ## Build
 
@@ -30,17 +30,20 @@ java -jar target/JarByteEditor.jar
 The GUI provides:
 
 - Modern, dark JavaFX layout powered by the **AtlantaFX PrimerDark** theme.
-- **Chrome-style Multi-Tab Editor**: Open and edit multiple `.class` or resource files simultaneously without losing state.
-- `Open JAR` for `.jar` and `.zip`.
+- **Android APK & DEX Support**: Open `.apk` files directly. `.dex` files are parsed into a **Virtual In-Memory Tree** using `dexlib2`, allowing you to instantly view and edit `.smali` code without extracting gigabytes of files to disk.
+- **Anti-Crash & Disk Protection**: Dual-protection watchdog monitors RAM and Disk space dynamically during heavy operations, preventing 100% disk usage and OS crashes.
+- **Advanced Search & Navigation**: Floating (non-modal) search results popup. Compute exact line numbers for text resources and double-click to instantly jump to the matching line in the editor.
+- **Chrome-style Multi-Tab Editor**: Open and edit multiple `.class`, `.smali` or resource files simultaneously without losing state.
+- `Open JAR` for `.jar`, `.zip`, and `.apk`.
 - **Dual-Mode Class Editing**: View and edit classes in either `.jasm` bytecode assembly or full **Java source code** (decompiled via CFR).
 - **Live Java Compilation**: Edit Java source code and recompile on the fly. The compiler automatically uses a `libs` directory or custom JARs added via `Project > Manage Dependencies`.
 - Editable text resources such as `yml`, `json`, `txt`, `xml`, and `properties`.
 - Binary metadata viewer with path, size, SHA1, and modified state.
-- Lazy JAR loading with progress/cancel, safe large-file preview, class disassembly only after selection, and one-entry-at-a-time translation scanning to avoid GUI freezes on heavy archives.
-- Save current editor buffer (compiles Java or assembles JASM) into the in-memory project with `Ctrl+S`.
+- Lazy JAR/APK loading with progress/cancel, safe large-file preview, class disassembly only after selection, and one-entry-at-a-time translation scanning to avoid GUI freezes on heavy archives.
+- Save current editor buffer (compiles Java or assembles JASM/Smali) into the in-memory project with `Ctrl+S`.
 - Save all modified tabs and export project with `Ctrl+Shift+S`.
-- Save As JAR.
-- Export Project with raw classes, resources, `.jasm`, and `project.json`.
+- Save As JAR / APK. (Auto-assembles modified `.smali` back into `.dex` files).
+- Export Project with raw classes, resources, `.jasm`, `.smali`, and `project.json`.
 - Search, replace string, diff, statistics, call graph, annotation display, and constant pool table.
 - Translate Project workflow with Google Translate preview, per-string checkboxes, and apply-to-memory changes.
 

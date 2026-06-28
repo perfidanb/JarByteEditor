@@ -27,8 +27,15 @@ public final class SearchEngine {
                 searchClass(entry, needle, type, results);
             } else if ((type == SearchType.ALL || type == SearchType.STRING) && entry.type() == EntryType.TEXT_RESOURCE) {
                 String text = new String(entry.readBytesOnce(), StandardCharsets.UTF_8);
-                if (text.toLowerCase(Locale.ROOT).contains(needle)) {
-                    results.add(new SearchResult("Resource", entry.path(), null, null, excerpt(text, query)));
+                String lower = text.toLowerCase(Locale.ROOT);
+                int index = lower.indexOf(needle);
+                while (index >= 0) {
+                    int line = 1;
+                    for (int i = 0; i < index; i++) {
+                        if (text.charAt(i) == '\n') line++;
+                    }
+                    results.add(new SearchResult("Resource", entry.path(), null, null, excerptText(text, index, query), line));
+                    index = lower.indexOf(needle, index + 1);
                 }
             }
         }
@@ -40,32 +47,32 @@ public final class SearchEngine {
             ClassNode node = new ClassNode();
             new ClassReader(entry.readBytesOnce()).accept(node, ClassReader.EXPAND_FRAMES);
             if (matches(type, SearchType.CLASS) && contains(node.name, needle)) {
-                results.add(new SearchResult("Class", entry.path(), node.name, null, node.name));
+                results.add(new SearchResult("Class", entry.path(), node.name, null, node.name, 0));
             }
             for (FieldNode field : node.fields) {
                 if (matches(type, SearchType.FIELD) && (contains(field.name, needle) || contains(field.desc, needle))) {
-                    results.add(new SearchResult("Field", entry.path(), node.name, field.name, field.desc));
+                    results.add(new SearchResult("Field", entry.path(), node.name, field.name, field.desc, 0));
                 }
                 if (matches(type, SearchType.STRING) && field.value instanceof String string && contains(string, needle)) {
-                    results.add(new SearchResult("String", entry.path(), node.name, field.name, string));
+                    results.add(new SearchResult("String", entry.path(), node.name, field.name, string, 0));
                 }
                 searchAnnotations(entry.path(), node.name, field.name, field.visibleAnnotations, needle, type, results);
                 searchAnnotations(entry.path(), node.name, field.name, field.invisibleAnnotations, needle, type, results);
             }
             for (MethodNode method : node.methods) {
                 if (matches(type, SearchType.METHOD) && (contains(method.name, needle) || contains(method.desc, needle))) {
-                    results.add(new SearchResult("Method", entry.path(), node.name, method.name, method.desc));
+                    results.add(new SearchResult("Method", entry.path(), node.name, method.name, method.desc, 0));
                 }
                 searchAnnotations(entry.path(), node.name, method.name, method.visibleAnnotations, needle, type, results);
                 searchAnnotations(entry.path(), node.name, method.name, method.invisibleAnnotations, needle, type, results);
                 for (AbstractInsnNode instruction : method.instructions) {
                     if (matches(type, SearchType.STRING) && instruction instanceof LdcInsnNode ldc && ldc.cst instanceof String string && contains(string, needle)) {
-                        results.add(new SearchResult("String", entry.path(), node.name, method.name, string));
+                        results.add(new SearchResult("String", entry.path(), node.name, method.name, string, 0));
                     }
                     if (matches(type, SearchType.OPCODE) && instruction.getOpcode() >= 0) {
                         String opcode = Printer.OPCODES[instruction.getOpcode()];
                         if (contains(opcode, needle)) {
-                            results.add(new SearchResult("Opcode", entry.path(), node.name, method.name, opcode));
+                            results.add(new SearchResult("Opcode", entry.path(), node.name, method.name, opcode, 0));
                         }
                     }
                 }
@@ -74,7 +81,7 @@ public final class SearchEngine {
             searchAnnotations(entry.path(), node.name, node.name, node.invisibleAnnotations, needle, type, results);
         } catch (RuntimeException e) {
             if (matches(type, SearchType.CLASS) && contains(entry.path(), needle)) {
-                results.add(new SearchResult("Class", entry.path(), null, null, "ASM parse error: " + e.getMessage()));
+                results.add(new SearchResult("Class", entry.path(), null, null, "ASM parse error: " + e.getMessage(), 0));
             }
         }
     }
@@ -86,12 +93,12 @@ public final class SearchEngine {
         }
         for (AnnotationNode annotation : annotations) {
             if (contains(annotation.desc, needle)) {
-                results.add(new SearchResult("Annotation", path, owner, name, annotation.desc));
+                results.add(new SearchResult("Annotation", path, owner, name, annotation.desc, 0));
             }
             if (annotation.values != null) {
                 for (Object value : annotation.values) {
                     if (contains(String.valueOf(value), needle)) {
-                        results.add(new SearchResult("Annotation", path, owner, name, String.valueOf(value)));
+                        results.add(new SearchResult("Annotation", path, owner, name, String.valueOf(value), 0));
                     }
                 }
             }
@@ -109,6 +116,10 @@ public final class SearchEngine {
     private static String excerpt(String text, String query) {
         String lower = text.toLowerCase(Locale.ROOT);
         int index = lower.indexOf(query.toLowerCase(Locale.ROOT));
+        return excerptText(text, index, query);
+    }
+
+    private static String excerptText(String text, int index, String query) {
         if (index < 0) {
             return text.substring(0, Math.min(120, text.length()));
         }

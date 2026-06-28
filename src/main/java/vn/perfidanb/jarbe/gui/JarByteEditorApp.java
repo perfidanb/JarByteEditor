@@ -23,6 +23,9 @@ import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.SelectionMode;
+import javafx.scene.control.Separator;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
@@ -31,10 +34,13 @@ import javafx.scene.control.TableView;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.ToolBar;
+import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
 import javafx.scene.control.TreeCell;
 import javafx.scene.control.cell.CheckBoxTableCell;
+import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.control.cell.TextFieldTableCell;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
@@ -42,6 +48,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser.ExtensionFilter;
@@ -177,14 +184,14 @@ public final class JarByteEditorApp extends Application {
     private final TabPane fileTabs = new TabPane();
     private final Map<String, FileTab> openTabs = new HashMap<>();
     private final TextArea details = readOnlyArea();
-    private final TextArea searchResults = readOnlyArea();
+    private final ListView<SearchResult> searchResults = new ListView<>();
     private final TextArea diffResults = readOnlyArea();
     private final TextArea stats = readOnlyArea();
     private final TextArea callGraph = readOnlyArea();
     private final TableView<ConstantPoolEntry> constantPoolTable = new TableView<>();
     private final Label status = new Label("Ready");
     private final ProgressIndicator progress = new ProgressIndicator();
-    private final ComboBox<String> target = new ComboBox<>();
+    // Target ComboBox removed from global state
     private double editorFontSize = 13.0;
 
     @Override
@@ -204,7 +211,7 @@ public final class JarByteEditorApp extends Application {
 
     private BorderPane buildRoot() {
         BorderPane root = new BorderPane();
-        root.setTop(new VBox(buildMenu(), buildToolbar()));
+        root.setTop(buildMenu());
         root.setCenter(buildMainSplit());
         root.setBottom(buildStatusBar());
         configureConstantPoolTable();
@@ -213,12 +220,12 @@ public final class JarByteEditorApp extends Application {
 
     private MenuBar buildMenu() {
         Menu file = new Menu("File");
-        MenuItem open = item("Open JAR", this::openJar);
-        MenuItem save = item("Save", this::saveCurrent);
+        MenuItem open = item("Open File", this::openJar);
+        MenuItem save = item("Save to Memory", this::saveCurrent);
         save.setAccelerator(new KeyCodeCombination(KeyCode.S, KeyCombination.CONTROL_DOWN));
-        MenuItem saveAs = item("Save As JAR", this::saveAsJar);
+        MenuItem saveAs = item("Build / Export", this::saveAsJar);
         saveAs.setAccelerator(new KeyCodeCombination(KeyCode.S, KeyCombination.CONTROL_DOWN, KeyCombination.SHIFT_DOWN));
-        MenuItem export = item("Export Project", this::exportProject);
+        MenuItem export = item("Export Project Dir", this::exportProject);
         file.getItems().addAll(open, save, saveAs, export);
 
         Menu edit = new Menu("Edit");
@@ -239,7 +246,14 @@ public final class JarByteEditorApp extends Application {
         );
 
         Menu tools = new Menu("Tools");
-        tools.getItems().add(item("Translate Project", this::showTranslateDialog));
+        tools.getItems().addAll(
+                item("Translate Project", this::showTranslateDialog),
+                new SeparatorMenuItem(),
+                item("Apktool Manager", () -> {
+                    ApktoolDialog dialog = new ApktoolDialog(stage);
+                    dialog.showAndWait();
+                })
+        );
 
         Menu projectMenu = new Menu("Project");
         projectMenu.getItems().addAll(
@@ -248,39 +262,7 @@ public final class JarByteEditorApp extends Application {
         return new MenuBar(file, edit, view, tools, projectMenu);
     }
 
-    private ToolBar buildToolbar() {
-        Button open = new Button("Open JAR");
-        open.setGraphic(FileIconFactory.actionIcon("open-action-icon"));
-        open.setOnAction(event -> openJar());
-        Button save = new Button("Save");
-        save.setGraphic(FileIconFactory.actionIcon("save-action-icon"));
-        save.setOnAction(event -> saveCurrent());
-        Button saveAs = new Button("Save As JAR");
-        saveAs.setGraphic(FileIconFactory.actionIcon("archive-action-icon"));
-        saveAs.setOnAction(event -> saveAsJar());
-        Button export = new Button("Export");
-        export.setGraphic(FileIconFactory.actionIcon("export-action-icon"));
-        export.setOnAction(event -> exportProject());
-        Button find = new Button("Find");
-        find.setGraphic(FileIconFactory.actionIcon("find-action-icon"));
-        find.setOnAction(event -> showFindDialog());
-        Button replace = new Button("Replace");
-        replace.setGraphic(FileIconFactory.actionIcon("replace-action-icon"));
-        replace.setOnAction(event -> showReplaceDialog());
-        Button translate = new Button("Translate");
-        translate.setGraphic(FileIconFactory.actionIcon("translate-action-icon"));
-        translate.setOnAction(event -> showTranslateDialog());
 
-        target.getItems().addAll("Original", "8", "11", "17", "21", "25");
-        target.getSelectionModel().selectFirst();
-        target.setMinWidth(92);
-        target.setPrefWidth(110);
-        progress.setVisible(false);
-        progress.setPrefSize(22, 22);
-        ToolBar toolBar = new ToolBar(open, save, saveAs, export, find, replace, translate, new Label("Target"), target, progress);
-        toolBar.setPrefHeight(38);
-        return toolBar;
-    }
 
     private SplitPane buildMainSplit() {
         tree.setShowRoot(true);
@@ -312,6 +294,26 @@ public final class JarByteEditorApp extends Application {
         TabPane toolsTabs = new TabPane();
         toolsTabs.getTabs().add(tab("Details", details));
         toolsTabs.getTabs().add(tab("Constant Pool", constantPoolTable));
+        searchResults.setCellFactory(lv -> new javafx.scene.control.ListCell<>() {
+            @Override
+            protected void updateItem(SearchResult item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText(item.compact());
+                }
+            }
+        });
+        searchResults.setOnMouseClicked(e -> {
+            if (e.getClickCount() == 2) {
+                SearchResult selected = searchResults.getSelectionModel().getSelectedItem();
+                if (selected != null) {
+                    showEntryAndJumpToLine(selected.path(), selected.line());
+                }
+            }
+        });
+
         toolsTabs.getTabs().add(tab("Search", searchResults));
         toolsTabs.getTabs().add(tab("Diff", diffResults));
         toolsTabs.getTabs().add(tab("Statistics", stats));
@@ -380,9 +382,12 @@ public final class JarByteEditorApp extends Application {
     }
 
     private HBox buildStatusBar() {
-        HBox box = new HBox(status);
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        progress.setVisible(false);
+        progress.setPrefSize(16, 16);
+        HBox box = new HBox(5, status, spacer, progress);
         box.setPadding(new Insets(6, 10, 6, 10));
-        HBox.setHgrow(status, Priority.ALWAYS);
         return box;
     }
 
@@ -447,8 +452,8 @@ public final class JarByteEditorApp extends Application {
             return;
         }
         FileChooser chooser = new FileChooser();
-        chooser.setTitle("Open JAR or ZIP");
-        chooser.getExtensionFilters().add(new ExtensionFilter("JAR / ZIP", "*.jar", "*.zip"));
+        chooser.setTitle("Open JAR, ZIP, or APK");
+        chooser.getExtensionFilters().add(new ExtensionFilter("Archive Files", "*.jar", "*.zip", "*.apk"));
         File file = chooser.showOpenDialog(stage);
         if (file == null) {
             return;
@@ -475,12 +480,20 @@ public final class JarByteEditorApp extends Application {
             @Override
             protected JarProject call() throws Exception {
                 updateMessage("Opening " + file.getName());
-                return projectService.open(file.toPath(), (completed, total, entryName, entrySize) -> {
-                    updateProgress(completed, Math.max(total, 1));
-                    if (completed == 1 || completed == total || completed % 50 == 0) {
-                        updateMessage("Reading " + completed + "/" + total + ": " + entryName);
+                JarProjectService.OpenProgress op = new JarProjectService.OpenProgress() {
+                    @Override
+                    public void update(int completed, int total, String entryName, long entrySize) {
+                        updateProgress(completed, Math.max(total, 1));
+                        if (completed == 1 || completed == total || completed % 50 == 0) {
+                            updateMessage("Reading " + completed + "/" + total + ": " + entryName);
+                        }
                     }
-                });
+                };
+                if (file.getName().toLowerCase().endsWith(".apk")) {
+                    return projectService.openApk(file.toPath(), op);
+                } else {
+                    return projectService.open(file.toPath(), op);
+                }
             }
         };
 
@@ -549,7 +562,7 @@ public final class JarByteEditorApp extends Application {
             if (active.isJavaMode()) {
                 editorSession.applyJavaText(entry, active.getEditor().getText());
             } else {
-                editorSession.applyText(entry, active.getEditor().getText(), selectedTarget());
+                editorSession.applyText(entry, active.getEditor().getText(), null);
             }
             active.setDirty(false);
             refreshEntryDetails(entry);
@@ -567,7 +580,7 @@ public final class JarByteEditorApp extends Application {
                     if (tab.isJavaMode()) {
                         editorSession.applyJavaText(tab.getEntry(), tab.getEditor().getText());
                     } else {
-                        editorSession.applyText(tab.getEntry(), tab.getEditor().getText(), selectedTarget());
+                        editorSession.applyText(tab.getEntry(), tab.getEditor().getText(), null);
                     }
                     tab.setDirty(false);
                 } catch (Exception e) {
@@ -580,7 +593,7 @@ public final class JarByteEditorApp extends Application {
 
     private void saveAsJar() {
         if (project == null) {
-            showInfo("No project", "Open a jar first.");
+            showInfo("No project", "Open a file first.");
             return;
         }
         boolean anyDirty = openTabs.values().stream().anyMatch(FileTab::isDirty);
@@ -590,21 +603,27 @@ public final class JarByteEditorApp extends Application {
         if (anyDirty) {
             saveAllDirty();
         }
+        
+        boolean isApk = project.extractedDir().isPresent();
         FileChooser chooser = new FileChooser();
-        chooser.setTitle("Save As JAR");
-        chooser.getExtensionFilters().add(new ExtensionFilter("JAR", "*.jar"));
+        chooser.setTitle(isApk ? "Build / Export APK" : "Build / Export JAR");
+        chooser.getExtensionFilters().add(new ExtensionFilter(isApk ? "APK" : "JAR", isApk ? "*.apk" : "*.jar"));
         chooser.setInitialFileName(defaultOutputName());
         File output = chooser.showSaveDialog(stage);
         if (output == null) {
             return;
         }
-        runTask("Building jar", new Task<Path>() {
+        runTask(isApk ? "Building APK..." : "Building JAR...", new Task<Path>() {
             @Override
             protected Path call() throws Exception {
-                projectService.saveAsJar(project, output.toPath());
+                if (isApk) {
+                    projectService.saveApk(project, output.toPath(), line -> javafx.application.Platform.runLater(() -> status.setText(line)));
+                } else {
+                    projectService.saveAsJar(project, output.toPath());
+                }
                 return output.toPath();
             }
-        }, path -> status.setText("Built " + path));
+        }, path -> status.setText("Built successfully to " + path));
     }
 
     private void exportProject() {
@@ -631,10 +650,29 @@ public final class JarByteEditorApp extends Application {
         }, path -> status.setText("Exported " + path));
     }
 
+    private void showEntryAndJumpToLine(String path, int line) {
+        showEntry(path);
+        FileTab existingTab = openTabs.get(path);
+        if (existingTab != null) {
+            if (line > 0) {
+                int zeroIndex = line - 1;
+                if (existingTab.getEditor().getParagraphs().size() > zeroIndex) {
+                    existingTab.getEditor().moveTo(zeroIndex, 0);
+                    existingTab.getEditor().requestFollowCaret();
+                } else {
+                    existingTab.setPendingJumpLine(line);
+                }
+            }
+        }
+    }
+
     private void showEntry(String path) {
         if (project == null || path == null || path.isBlank()) {
             return;
         }
+        
+
+        
         FileTab existingTab = openTabs.get(path);
         if (existingTab != null) {
             fileTabs.getSelectionModel().select(existingTab.getTab());
@@ -687,6 +725,14 @@ public final class JarByteEditorApp extends Application {
             if (getActiveTab() == fileTab) {
                 details.setText(view.details().text());
                 constantPoolTable.getItems().setAll(view.details().constantPool());
+            }
+            if (fileTab.getPendingJumpLine() != null) {
+                int zeroIndex = fileTab.getPendingJumpLine() - 1;
+                if (zeroIndex >= 0 && zeroIndex < fileTab.getEditor().getParagraphs().size()) {
+                    fileTab.getEditor().moveTo(zeroIndex, 0);
+                    fileTab.getEditor().requestFollowCaret();
+                }
+                fileTab.setPendingJumpLine(null);
             }
             status.setText(view.statusText());
         });
@@ -915,7 +961,10 @@ public final class JarByteEditorApp extends Application {
                 return shown;
             }
             if (!filter.isBlank() && !entry.path().toLowerCase(Locale.ROOT).contains(filter)) {
-                continue;
+                byte[] bytes = entry.readBytesOnce();
+                if (bytes == null || !new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1).toLowerCase(Locale.ROOT).contains(filter)) {
+                    continue;
+                }
             }
             String[] parts = entry.path().split("/");
             String parentPath = groupKey;
@@ -967,9 +1016,47 @@ public final class JarByteEditorApp extends Application {
                     return searchEngine.search(project, text, searchType);
                 }
             }, results -> {
-                searchResults.setText(results.isEmpty()
-                        ? "No results"
-                        : String.join(System.lineSeparator(), results.stream().map(SearchResult::compact).toList()));
+                if (results.isEmpty()) {
+                    searchResults.getItems().clear();
+                    showInfo("Search", "No results found.");
+                } else {
+                    searchResults.getItems().setAll(results);
+
+                    // Popup secondary GUI modal
+                    Dialog<Void> resultDialog = new Dialog<>();
+                    resultDialog.initOwner(stage);
+                    resultDialog.initModality(javafx.stage.Modality.NONE); // Non-modal so they can click around
+                    resultDialog.setTitle("Search Results (" + results.size() + ")");
+                    resultDialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+                    ListView<SearchResult> listView = new ListView<>();
+                    listView.getItems().setAll(results);
+                    listView.setCellFactory(lv -> new javafx.scene.control.ListCell<>() {
+                        @Override
+                        protected void updateItem(SearchResult item, boolean empty) {
+                            super.updateItem(item, empty);
+                            if (empty || item == null) {
+                                setText(null);
+                            } else {
+                                setText(item.compact());
+                            }
+                        }
+                    });
+
+                    listView.setOnMouseClicked(e -> {
+                        if (e.getClickCount() == 2) {
+                            SearchResult selected = listView.getSelectionModel().getSelectedItem();
+                            if (selected != null) {
+                                showEntryAndJumpToLine(selected.path(), selected.line());
+                                // Do not close the dialog so they can keep exploring results!
+                            }
+                        }
+                    });
+
+                    listView.setPrefSize(700, 400);
+                    resultDialog.getDialogPane().setContent(listView);
+                    resultDialog.show();
+                }
                 status.setText("Search results: " + results.size());
             });
         });
@@ -984,11 +1071,16 @@ public final class JarByteEditorApp extends Application {
         dialog.setTitle("Replace String");
         TextField find = new TextField();
         TextField replacement = new TextField();
+        ComboBox<String> targetCombo = new ComboBox<>();
+        targetCombo.getItems().addAll("Original", "8", "11", "17", "21", "25");
+        targetCombo.getSelectionModel().selectFirst();
+
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(10);
         grid.addRow(0, new Label("Find"), find);
         grid.addRow(1, new Label("Replace"), replacement);
+        grid.addRow(2, new Label("Target Java"), targetCombo);
         dialog.getDialogPane().setContent(grid);
         ButtonType preview = new ButtonType("Preview");
         ButtonType apply = new ButtonType("Apply");
@@ -1007,13 +1099,51 @@ public final class JarByteEditorApp extends Application {
                         return searchEngine.search(project, findText, SearchType.STRING);
                     }
                 }, results -> {
-                    searchResults.setText(results.isEmpty()
-                            ? "No results"
-                            : String.join(System.lineSeparator(), results.stream().map(SearchResult::compact).toList()));
+                    if (results.isEmpty()) {
+                        searchResults.getItems().clear();
+                        showInfo("Replace Preview", "No matches found.");
+                    } else {
+                        searchResults.getItems().setAll(results);
+
+                        // Popup secondary GUI modal
+                        Dialog<Void> resultDialog = new Dialog<>();
+                        resultDialog.initOwner(stage);
+                        resultDialog.initModality(javafx.stage.Modality.NONE); // Non-modal so they can click around
+                        resultDialog.setTitle("Preview Matches (" + results.size() + ")");
+                        resultDialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+                        ListView<SearchResult> listView = new ListView<>();
+                        listView.getItems().setAll(results);
+                        listView.setCellFactory(lv -> new javafx.scene.control.ListCell<>() {
+                            @Override
+                            protected void updateItem(SearchResult item, boolean empty) {
+                                super.updateItem(item, empty);
+                                if (empty || item == null) {
+                                    setText(null);
+                                } else {
+                                    setText(item.compact());
+                                }
+                            }
+                        });
+
+                        listView.setOnMouseClicked(e -> {
+                            if (e.getClickCount() == 2) {
+                                SearchResult selected = listView.getSelectionModel().getSelectedItem();
+                                if (selected != null) {
+                                    showEntryAndJumpToLine(selected.path(), selected.line());
+                                }
+                            }
+                        });
+
+                        listView.setPrefSize(700, 400);
+                        resultDialog.getDialogPane().setContent(listView);
+                        resultDialog.show();
+                    }
                     status.setText("Preview matches: " + results.size());
                 });
             } else if (button == apply) {
-                Integer targetVersion = selectedTarget();
+                String selected = targetCombo.getValue();
+                Integer targetVersion = ("Original".equals(selected) || selected == null) ? null : Integer.parseInt(selected);
                 runTask("Replacing strings", new Task<Integer>() {
                     @Override
                     protected Integer call() {
@@ -1232,14 +1362,6 @@ public final class JarByteEditorApp extends Application {
                 .orElse(languages.getFirst());
     }
 
-    private Integer selectedTarget() {
-        String selected = target.getValue();
-        if (selected == null || selected.equals("Original")) {
-            return null;
-        }
-        return Integer.parseInt(selected);
-    }
-
     private ProjectViewData buildProjectViewData(JarProject source) {
         List<JarEntryData> classEntries = source.classEntries();
         List<JarEntryData> resourceEntries = source.resourceEntries();
@@ -1325,6 +1447,10 @@ public final class JarByteEditorApp extends Application {
             Throwable error = task.getException();
             showError("Operation failed", error == null ? "Unknown error" : error.getMessage());
             status.setText("Failed: " + message);
+        });
+        task.setOnCancelled(event -> {
+            progress.setVisible(false);
+            status.setText("Cancelled: " + message);
         });
         Thread thread = new Thread(task, "jarbe-task");
         thread.setDaemon(true);
@@ -1478,12 +1604,11 @@ public final class JarByteEditorApp extends Application {
     }
 
     private String defaultOutputName() {
-        if (project == null) {
-            return "plugin-fixed.jar";
-        }
-        String name = project.displayName();
-        int dot = name.lastIndexOf('.');
-        return dot > 0 ? name.substring(0, dot) + "-fixed.jar" : name + "-fixed.jar";
+        if (project == null) return "project-edited.jar";
+        return project.sourcePath()
+                .map(p -> p.getFileName().toString())
+                .map(name -> name.replaceFirst("\\.(jar|zip|apk)$", "-edited.$1"))
+                .orElse("project-edited.jar");
     }
 
     private record EntryDetails(String text, List<ConstantPoolEntry> constantPool) {

@@ -20,6 +20,10 @@ public class FileTab {
     private final ComboBox<String> languageChoice;
     private boolean isJavaMode = false;
     private boolean isDirty = false;
+    private Integer pendingJumpLine = null;
+
+    public Integer getPendingJumpLine() { return pendingJumpLine; }
+    public void setPendingJumpLine(Integer pendingJumpLine) { this.pendingJumpLine = pendingJumpLine; }
 
     public FileTab(JarEntryData entry) {
         this.entry = entry;
