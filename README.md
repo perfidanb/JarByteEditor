@@ -47,6 +47,8 @@ The GUI provides:
 - Search, replace string, diff, statistics, call graph, annotation display, and constant pool table.
 - Translate Project workflow with Google Translate preview, per-string checkboxes, and apply-to-memory changes.
 
+<img width="1920" height="1019" alt="image" src="https://github.com/user-attachments/assets/8cee4110-64a7-4938-bd0b-1a8f98ab7434" />
+
 ## Translate Project
 
 Open a jar, then use:
